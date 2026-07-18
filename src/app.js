@@ -14,7 +14,7 @@ const settingsRoutes = require('./modules/settings/settings.routes');
 const app = express();
 
 // Global middlewares
-app.use(cors());
+app.use(cors({ origin: 'https://qrclfrontendevent.vercel.app' }));
 app.use(express.json());
 app.use(generalLimiter);
 
