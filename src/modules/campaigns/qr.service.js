@@ -1,35 +1,23 @@
 const QRCode = require('qrcode');
 const cloudinary = require('cloudinary').v2;
 const config = require('../../config');
+const { overlayQROntoDesign } = require('./overlay.service');
 
-// Configure Cloudinary once
 cloudinary.config({
   cloud_name: config.cloudinary.cloudName,
   api_key: config.cloudinary.apiKey,
   api_secret: config.cloudinary.apiSecret,
 });
 
-/**
- * Generate QR code buffer from a string
- * @param {string} data – unique identifier for the attendee
- * @returns {Promise<Buffer>}
- */
-const generateQRBuffer = (data) => {
-  return QRCode.toBuffer(data, {
+const generateQRBuffer = (data) =>
+  QRCode.toBuffer(data, {
     width: 500,
     margin: 2,
     color: { dark: '#000000', light: '#ffffff' },
   });
-};
 
-/**
- * Upload buffer to Cloudinary and get secure URL
- * @param {Buffer} buffer – image buffer
- * @param {string} publicId – unique public ID (e.g., campaignId_recipientId)
- * @returns {Promise<string>} – secure HTTPS URL
- */
-const uploadToCloudinary = (buffer, publicId) => {
-  return new Promise((resolve, reject) => {
+const uploadToCloudinary = (buffer, publicId) =>
+  new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: 'event_qrcodes',
@@ -42,20 +30,25 @@ const uploadToCloudinary = (buffer, publicId) => {
     );
     stream.end(buffer);
   });
-};
 
 /**
- * Generate and upload a QR code for a single recipient
- * @param {object} recipient – recipient subdocument (with phone, name, event, etc.)
- * @param {string} campaignId – campaign ID for unique naming
- * @returns {Promise<string>} – permanent QR image URL
+ * Generate final QR image (plain or overlaid on a design).
+ * @param {Object} recipient
+ * @param {string} campaignId
+ * @param {Object|null} design – { imageUrl, qrPosition } or null
+ * @returns {Promise<string>} – Cloudinary URL
  */
-const generateRecipientQR = async (recipient, campaignId) => {
+const generateRecipientQR = async (recipient, campaignId, design = null) => {
   const data = `${campaignId}_${recipient.phone}_${Date.now()}`;
-  const buffer = await generateQRBuffer(data);
+  const qrBuffer = await generateQRBuffer(data);
+
+  let finalBuffer = qrBuffer;
+  if (design) {
+    finalBuffer = await overlayQROntoDesign(design.imageUrl, design.qrPosition, qrBuffer);
+  }
+
   const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;
-  const url = await uploadToCloudinary(buffer, publicId);
-  return url;
+  return uploadToCloudinary(finalBuffer, publicId);
 };
 
 module.exports = { generateRecipientQR };

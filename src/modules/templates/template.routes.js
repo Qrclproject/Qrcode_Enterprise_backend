@@ -12,4 +12,8 @@ router.put('/:id', auth, validate(updateTemplateSchema), ctrl.update);
 router.delete('/:id', auth, ctrl.remove);
 router.post('/:id/clone', auth, ctrl.clone);
 
+// NEW
+router.post('/bulk-delete', auth, ctrl.bulkDelete);
+router.delete('/:templateId/variants/:variantIndex', auth, ctrl.deleteVariant);
+
 module.exports = router;

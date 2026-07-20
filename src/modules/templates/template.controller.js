@@ -1,5 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const templateService = require('./template.service');
+const Template = require('./template.model');          // ← missing import
+const ApiError = require('../../utils/apiError');      // ← missing import
 
 const create = asyncHandler(async (req, res) => {
   const template = await templateService.create(req.body);
@@ -31,4 +33,40 @@ const clone = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: newTemplate });
 });
 
-module.exports = { create, getAll, getById, update, remove, clone };
+// POST /api/templates/bulk-delete
+const bulkDelete = asyncHandler(async (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new ApiError(400, 'No template IDs provided');
+  }
+  await Template.deleteMany({ _id: { $in: ids } });
+  res.json({ success: true, message: `${ids.length} templates deleted` });
+});
+
+// DELETE /api/templates/:templateId/variants/:variantIndex
+const deleteVariant = asyncHandler(async (req, res) => {
+  const { templateId, variantIndex } = req.params;
+  const template = await Template.findById(templateId);
+  if (!template) throw new ApiError(404, 'Template not found');
+
+  const idx = parseInt(variantIndex, 10);
+  if (isNaN(idx) || idx < 0 || idx >= template.variants.length) {
+    throw new ApiError(400, 'Invalid variant index');
+  }
+
+  template.variants.splice(idx, 1);
+  await template.save();
+
+  res.json({ success: true, data: template });
+});
+
+module.exports = {
+  create,
+  getAll,
+  getById,
+  update,
+  remove,
+  clone,
+  bulkDelete,       // ← added
+  deleteVariant,    // ← added
+};

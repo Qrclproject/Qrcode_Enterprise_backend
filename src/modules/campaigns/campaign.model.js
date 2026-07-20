@@ -49,6 +49,10 @@ const campaignSchema = new mongoose.Schema(
       qr: String,
       date: String,
     },
+    designId: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Design',
+},
     qrGenerationStatus: {
       total: Number,
       completed: { type: Number, default: 0 },

@@ -10,11 +10,29 @@ const templateRoutes = require('./modules/templates/template.routes');
 const whatsappRoutes = require('./modules/whatsapp/whatsapp.routes');
 const analyticsRoutes = require('./modules/analytics/analytics.routes');
 const settingsRoutes = require('./modules/settings/settings.routes');
+const designRoutes = require('./modules/designs/design.routes');
 
 const app = express();
 
-// Global middlewares
-app.use(cors({ origin: 'https://qrclfrontendevent.vercel.app' }));
+// ─── CORS: allow both local dev and production frontend ──────────
+const allowedOrigins = [
+  'http://localhost:5173',                     // local development
+  'https://qrclfrontendevent.vercel.app',      // production
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+}));
+
 app.use(express.json());
 app.use(generalLimiter);
 
@@ -25,11 +43,12 @@ app.use('/api/templates', templateRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/designs', designRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
-// Error handler (must be last)
+// Error handler
 app.use(errorHandler);
 
 module.exports = app;

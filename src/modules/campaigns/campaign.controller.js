@@ -78,22 +78,22 @@ const getById = asyncHandler(async (req, res) => {
   res.json({ success: true, data: campaign });
 });
 
-// Helper that runs in the background
 async function processQRCodes(campaignId) {
-  const campaign = await Campaign.findById(campaignId);
+  const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign || campaign.qrGenerationStatus?.status !== 'processing') return;
+
+  const design = campaign.designId || null;   // will be null if no design assigned
 
   const recipients = campaign.recipients;
   for (let i = 0; i < recipients.length; i++) {
     const recipient = recipients[i];
     try {
-      const qrUrl = await qrService.generateRecipientQR(recipient, campaignId);
+      const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design);
       recipient.qrUrl = qrUrl;
       campaign.qrGenerationStatus.completed = i + 1;
       await campaign.save();
     } catch (err) {
       console.error(`QR generation failed for ${recipient.phone}:`, err.message);
-      // Continue with next recipient
     }
   }
 
