@@ -46,4 +46,26 @@ const getAll = asyncHandler(async (req, res) => {
   res.json({ success: true, data: designs });
 });
 
-module.exports = { create, getAll };
+const updateDesign = asyncHandler(async (req, res) => {
+  const { designId } = req.params;
+  const { name, qrPosition } = req.body;
+  
+  const design = await Design.findById(designId);
+  if (!design) throw new ApiError(404, 'Design not found');
+  
+  if (name) design.name = name;
+  if (qrPosition) design.qrPosition = qrPosition;
+  
+  await design.save();
+  res.json({ success: true, data: design });
+});
+
+const deleteDesign = asyncHandler(async (req, res) => {
+  const { designId } = req.params;
+  const design = await Design.findByIdAndDelete(designId);
+  if (!design) throw new ApiError(404, 'Design not found');
+  res.json({ success: true, message: 'Design deleted' });
+});
+
+// Export them along with existing ones
+module.exports = { create, getAll, updateDesign, deleteDesign };
