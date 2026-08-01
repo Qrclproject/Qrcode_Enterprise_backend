@@ -1,8 +1,9 @@
 const Campaign = require('./campaign.model');
-const Template = require('../templates/template.model'); // 👈 NEW: import Template model
+const Template = require('../templates/template.model');
 const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
 const { deleteResources } = require('../../utils/cloudinaryCleanup');
+const mongoose = require('mongoose');
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
@@ -15,7 +16,37 @@ const getWaitMilliseconds = (value, unit) => {
   return (value || 1) * (multipliers[unit] || 60000);
 };
 
-// ─── Create campaign (unchanged) ────────────────────────────────────
+const extractPlaceholders = (body) => {
+  const matches = body.match(/{{(\d+)}}/g) || [];
+  return matches.map(m => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
+};
+
+const buildBodyParameters = (recipient, placeholderNumbers) => {
+  const fieldMap = {
+    1: recipient.name || '',
+    2: recipient.event || '',
+    3: recipient.date || '',
+    4: recipient.time || '',
+    5: recipient.venue || '',
+    6: recipient.feedbackLink || '',
+  };
+  return placeholderNumbers.map(num => ({
+    type: 'text',
+    text: fieldMap[num] || '',
+  }));
+};
+
+const validateTemplateId = (templateId) => {
+  if (!templateId) {
+    throw new ApiError(400, 'Campaign is missing a template ID. Please recreate the campaign.');
+  }
+  if (!mongoose.Types.ObjectId.isValid(templateId)) {
+    throw new ApiError(400, 'Invalid template ID format.');
+  }
+  return true;
+};
+
+// ─── Create campaign ─────────────────────────────────────────────────
 const createCampaign = async (data) => {
   const campaign = await Campaign.create(data);
   return campaign;
@@ -27,62 +58,41 @@ const launchCampaign = async (campaignId) => {
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   if (campaign.status === 'sending') throw new ApiError(400, 'Campaign is already sending');
 
-  // 👇 NEW: Fetch the template to get the WhatsApp-approved name
-  let templateName = 'event_qr_delivery'; // fallback
-  if (campaign.templateId) {
-    const template = await Template.findById(campaign.templateId);
-    if (template && template.whatsappTemplateName) {
-      templateName = template.whatsappTemplateName;
-    } else {
-      // If template exists but has no whatsappTemplateName, fallback to its name or id
-      // but we strongly recommend adding the field.
-      console.warn(`Template ${campaign.templateId} has no whatsappTemplateName. Using fallback.`);
-    }
-  }
+  validateTemplateId(campaign.templateId);
+
+  const template = await Template.findById(campaign.templateId);
+  if (!template) throw new ApiError(404, 'Template not found');
+  const templateName = template.whatsappTemplateName || 'event_qr_delivery';
 
   campaign.status = 'sending';
   await campaign.save();
 
-  const total = campaign.recipients.length;
+  const recipients = campaign.recipients;
+  const activeIndices = campaign.activeVariants || [0];
 
-  for (let i = 0; i < total; i++) {
-    const recipient = campaign.recipients[i];
+  for (let i = 0; i < recipients.length; i++) {
+    const recipient = recipients[i];
     try {
-      const components = [];
+      const variantIndex = activeIndices[i % activeIndices.length];
+      const variant = template.variants[variantIndex];
+      if (!variant) throw new Error(`Variant at index ${variantIndex} not found`);
 
-      // ── Header (QR image) if present ──
+      const placeholders = extractPlaceholders(variant.body);
+      const bodyParams = buildBodyParameters(recipient, placeholders);
+
+      const components = [];
       if (recipient.qrUrl) {
         components.push({
           type: 'header',
-          parameters: [
-            {
-              type: 'image',
-              image: { link: recipient.qrUrl },
-            },
-          ],
+          parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
         });
       }
-
-      // ── Body parameters ──
-      // 🔥 IMPORTANT: The order and number of parameters must match the WhatsApp template's placeholders.
-      // Currently we send name, event, date as {{1}}, {{2}}, {{3}}.
-      // If your template expects different placeholders, adjust accordingly.
       components.push({
         type: 'body',
-        parameters: [
-          { type: 'text', text: recipient.name || '' },
-          { type: 'text', text: recipient.event || '' },
-          { type: 'text', text: recipient.date || '' },
-        ],
+        parameters: bodyParams,
       });
 
-      // 👇 Use the resolved templateName (WhatsApp-approved name)
-      await sendTemplateMessage(
-        recipient.phone,
-        templateName, // ✅ Now this is the correct WhatsApp template name
-        components,
-        campaign.userId
-      );
+      await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
       recipient.status = 'sent';
       campaign.delivered += 1;
@@ -92,13 +102,11 @@ const launchCampaign = async (campaignId) => {
       campaign.failed += 1;
     }
 
-    // ── Batching delay ──
-    if (i < total - 1 && (i + 1) % campaign.batchSize === 0) {
-      await new Promise((resolve) =>
+    if (i < recipients.length - 1 && (i + 1) % campaign.batchSize === 0) {
+      await new Promise(resolve =>
         setTimeout(resolve, getWaitMilliseconds(campaign.waitValue, campaign.waitUnit))
       );
     }
-
     await campaign.save();
   }
 
@@ -107,14 +115,14 @@ const launchCampaign = async (campaignId) => {
   return campaign;
 };
 
-// ─── Get single campaign (unchanged) ──────────────────────────────
+// ─── Get single campaign ─────────────────────────────────────────────
 const getCampaignById = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   return campaign;
 };
 
-// ─── Get campaign history (unchanged) ──────────────────────────────
+// ─── Get campaign history ───────────────────────────────────────────
 const getCampaignHistory = async (filters = {}) => {
   const { search, status, page = 1, limit = 10 } = filters;
   const query = {};
@@ -128,19 +136,16 @@ const getCampaignHistory = async (filters = {}) => {
   return { campaigns, total, page, totalPages: Math.ceil(total / limit) };
 };
 
-// ─── Retry failed recipients ───────────────────────────────────────
+// ─── Retry failed recipients ────────────────────────────────────────
 const retryFailedRecipients = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
-  // 👇 Fetch template name (same logic as launch)
-  let templateName = 'event_qr_delivery';
-  if (campaign.templateId) {
-    const template = await Template.findById(campaign.templateId);
-    if (template && template.whatsappTemplateName) {
-      templateName = template.whatsappTemplateName;
-    }
-  }
+  validateTemplateId(campaign.templateId);
+
+  const template = await Template.findById(campaign.templateId);
+  if (!template) throw new ApiError(404, 'Template not found');
+  const templateName = template.whatsappTemplateName || 'event_qr_delivery';
 
   const failedRecipients = campaign.recipients.filter((r) => r.status === 'failed');
   if (failedRecipients.length === 0) throw new ApiError(400, 'No failed recipients to retry');
@@ -148,8 +153,17 @@ const retryFailedRecipients = async (campaignId) => {
   campaign.status = 'sending';
   await campaign.save();
 
+  const activeIndices = campaign.activeVariants || [0];
+
   for (const recipient of failedRecipients) {
     try {
+      const variantIndex = activeIndices[0];
+      const variant = template.variants[variantIndex];
+      if (!variant) throw new Error('Variant not found');
+
+      const placeholders = extractPlaceholders(variant.body);
+      const bodyParams = buildBodyParameters(recipient, placeholders);
+
       const components = [];
       if (recipient.qrUrl) {
         components.push({
@@ -159,19 +173,11 @@ const retryFailedRecipients = async (campaignId) => {
       }
       components.push({
         type: 'body',
-        parameters: [
-          { type: 'text', text: recipient.name || '' },
-          { type: 'text', text: recipient.event || '' },
-          { type: 'text', text: recipient.date || '' },
-        ],
+        parameters: bodyParams,
       });
 
-      await sendTemplateMessage(
-        recipient.phone,
-        templateName, // ✅ Use WhatsApp template name
-        components,
-        campaign.userId
-      );
+      await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
+
       recipient.status = 'sent';
       recipient.failureReason = undefined;
       campaign.delivered += 1;
@@ -186,12 +192,11 @@ const retryFailedRecipients = async (campaignId) => {
   return campaign;
 };
 
-// ─── Delete campaign (unchanged) ──────────────────────────────────
+// ─── Delete campaign ─────────────────────────────────────────────────
 const deleteCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
-  // Collect public IDs of all QR images for this campaign
   const publicIds = [];
   for (const recipient of campaign.recipients) {
     if (recipient.qrUrl && recipient.qrUrl.includes('cloudinary.com')) {
@@ -202,7 +207,6 @@ const deleteCampaign = async (campaignId) => {
     }
   }
 
-  // Delete from Cloudinary (in batches of 100)
   if (publicIds.length > 0) {
     const batchSize = 100;
     for (let i = 0; i < publicIds.length; i += batchSize) {
@@ -211,7 +215,6 @@ const deleteCampaign = async (campaignId) => {
     }
   }
 
-  // Finally, delete the campaign from the database
   await Campaign.findByIdAndDelete(campaignId);
   return { deleted: true, imagesRemoved: publicIds.length };
 };

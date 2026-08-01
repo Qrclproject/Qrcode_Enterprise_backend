@@ -36,8 +36,8 @@ const getCredentials = async (userId) => {
 // ─── Send a template message (optionally with a specific user) ────
 const sendTemplateMessage = async (to, templateName, components = [], userId = null) => {
   const creds = await getCredentials(userId);
-
   const url = `https://graph.facebook.com/v22.0/${creds.phoneNumberId}/messages`;
+
   const body = {
     messaging_product: 'whatsapp',
     to,
@@ -49,11 +49,11 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
     },
   };
 
-  // 🔍 Log what we are about to send
-  console.log('\n===== WHATSAPP REQUEST =====');
+  // 🔍 Enhanced log
+  console.log('\n===== WHATSAPP REQUEST (FULL) =====');
   console.log('URL:', url);
   console.log('Body:', JSON.stringify(body, null, 2));
-  console.log('=============================');
+  console.log('=====================================\n');
 
   const { data } = await axios.post(url, body, {
     headers: {
@@ -62,15 +62,11 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
     },
   });
 
-  // 🔍 Log the response
-  console.log('✅ WhatsApp Response:', JSON.stringify(data, null, 2));
-
   if (data.error) {
     throw new ApiError(400, data.error.message || 'WhatsApp API error');
   }
   return data;
 };
-
 // ─── Send a test message (now also accepts userId) ────────────────
 const sendTestMessage = async (to, templateName, variables, userId = null) => {
   const components = [];
