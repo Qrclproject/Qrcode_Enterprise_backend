@@ -9,6 +9,7 @@ const variantSchema = z.object({
 const createTemplateSchema = z.object({
   body: z.object({
     name: z.string().min(1, 'Template name is required'),
+    whatsappTemplateName: z.string().min(1, 'WhatsApp template name is required'),
     category: z.enum(['delivery', 'reminder', 'thanks', 'custom']).optional(),
     showQR: z.boolean().optional(),
     variants: z.array(variantSchema).min(1, 'At least one variant is required'),
@@ -18,6 +19,7 @@ const createTemplateSchema = z.object({
 const updateTemplateSchema = z.object({
   body: z.object({
     name: z.string().optional(),
+    whatsappTemplateName: z.string().min(1, 'WhatsApp template name cannot be empty').optional(),
     category: z.enum(['delivery', 'reminder', 'thanks', 'custom']).optional(),
     showQR: z.boolean().optional(),
     variants: z.array(variantSchema).optional(),

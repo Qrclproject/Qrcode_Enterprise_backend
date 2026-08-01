@@ -1,8 +1,10 @@
 const Campaign = require('./campaign.model');
+const Template = require('../templates/template.model'); // 👈 NEW: import Template model
 const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
 const { deleteResources } = require('../../utils/cloudinaryCleanup');
-// Helpers
+
+// ─── Helpers ──────────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
   const multipliers = {
     seconds: 1000,
@@ -13,15 +15,30 @@ const getWaitMilliseconds = (value, unit) => {
   return (value || 1) * (multipliers[unit] || 60000);
 };
 
+// ─── Create campaign (unchanged) ────────────────────────────────────
 const createCampaign = async (data) => {
   const campaign = await Campaign.create(data);
   return campaign;
 };
 
+// ─── Launch campaign ────────────────────────────────────────────────
 const launchCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   if (campaign.status === 'sending') throw new ApiError(400, 'Campaign is already sending');
+
+  // 👇 NEW: Fetch the template to get the WhatsApp-approved name
+  let templateName = 'event_qr_delivery'; // fallback
+  if (campaign.templateId) {
+    const template = await Template.findById(campaign.templateId);
+    if (template && template.whatsappTemplateName) {
+      templateName = template.whatsappTemplateName;
+    } else {
+      // If template exists but has no whatsappTemplateName, fallback to its name or id
+      // but we strongly recommend adding the field.
+      console.warn(`Template ${campaign.templateId} has no whatsappTemplateName. Using fallback.`);
+    }
+  }
 
   campaign.status = 'sending';
   await campaign.save();
@@ -32,6 +49,8 @@ const launchCampaign = async (campaignId) => {
     const recipient = campaign.recipients[i];
     try {
       const components = [];
+
+      // ── Header (QR image) if present ──
       if (recipient.qrUrl) {
         components.push({
           type: 'header',
@@ -43,6 +62,11 @@ const launchCampaign = async (campaignId) => {
           ],
         });
       }
+
+      // ── Body parameters ──
+      // 🔥 IMPORTANT: The order and number of parameters must match the WhatsApp template's placeholders.
+      // Currently we send name, event, date as {{1}}, {{2}}, {{3}}.
+      // If your template expects different placeholders, adjust accordingly.
       components.push({
         type: 'body',
         parameters: [
@@ -52,13 +76,14 @@ const launchCampaign = async (campaignId) => {
         ],
       });
 
-      // Pass campaign.userId so the WhatsApp service can use the user's saved credentials
+      // 👇 Use the resolved templateName (WhatsApp-approved name)
       await sendTemplateMessage(
         recipient.phone,
-        campaign.templateId || 'event_qr_delivery',
+        templateName, // ✅ Now this is the correct WhatsApp template name
         components,
-        campaign.userId          // ← 4th argument
+        campaign.userId
       );
+
       recipient.status = 'sent';
       campaign.delivered += 1;
     } catch (err) {
@@ -67,6 +92,7 @@ const launchCampaign = async (campaignId) => {
       campaign.failed += 1;
     }
 
+    // ── Batching delay ──
     if (i < total - 1 && (i + 1) % campaign.batchSize === 0) {
       await new Promise((resolve) =>
         setTimeout(resolve, getWaitMilliseconds(campaign.waitValue, campaign.waitUnit))
@@ -81,12 +107,14 @@ const launchCampaign = async (campaignId) => {
   return campaign;
 };
 
+// ─── Get single campaign (unchanged) ──────────────────────────────
 const getCampaignById = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   return campaign;
 };
 
+// ─── Get campaign history (unchanged) ──────────────────────────────
 const getCampaignHistory = async (filters = {}) => {
   const { search, status, page = 1, limit = 10 } = filters;
   const query = {};
@@ -100,9 +128,19 @@ const getCampaignHistory = async (filters = {}) => {
   return { campaigns, total, page, totalPages: Math.ceil(total / limit) };
 };
 
+// ─── Retry failed recipients ───────────────────────────────────────
 const retryFailedRecipients = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  // 👇 Fetch template name (same logic as launch)
+  let templateName = 'event_qr_delivery';
+  if (campaign.templateId) {
+    const template = await Template.findById(campaign.templateId);
+    if (template && template.whatsappTemplateName) {
+      templateName = template.whatsappTemplateName;
+    }
+  }
 
   const failedRecipients = campaign.recipients.filter((r) => r.status === 'failed');
   if (failedRecipients.length === 0) throw new ApiError(400, 'No failed recipients to retry');
@@ -130,9 +168,9 @@ const retryFailedRecipients = async (campaignId) => {
 
       await sendTemplateMessage(
         recipient.phone,
-        campaign.templateId || 'event_qr_delivery',
+        templateName, // ✅ Use WhatsApp template name
         components,
-        campaign.userId          // ← 4th argument
+        campaign.userId
       );
       recipient.status = 'sent';
       recipient.failureReason = undefined;
@@ -148,6 +186,7 @@ const retryFailedRecipients = async (campaignId) => {
   return campaign;
 };
 
+// ─── Delete campaign (unchanged) ──────────────────────────────────
 const deleteCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -177,7 +216,7 @@ const deleteCampaign = async (campaignId) => {
   return { deleted: true, imagesRemoved: publicIds.length };
 };
 
-
+// ─── Exports ─────────────────────────────────────────────────────────
 module.exports = {
   createCampaign,
   launchCampaign,

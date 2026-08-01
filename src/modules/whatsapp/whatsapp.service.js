@@ -37,7 +37,7 @@ const getCredentials = async (userId) => {
 const sendTemplateMessage = async (to, templateName, components = [], userId = null) => {
   const creds = await getCredentials(userId);
 
-  const url = `https://graph.facebook.com/v19.0/${creds.phoneNumberId}/messages`;
+  const url = `https://graph.facebook.com/v22.0/${creds.phoneNumberId}/messages`;
   const body = {
     messaging_product: 'whatsapp',
     to,
@@ -49,12 +49,21 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
     },
   };
 
+  // 🔍 Log what we are about to send
+  console.log('\n===== WHATSAPP REQUEST =====');
+  console.log('URL:', url);
+  console.log('Body:', JSON.stringify(body, null, 2));
+  console.log('=============================');
+
   const { data } = await axios.post(url, body, {
     headers: {
       Authorization: `Bearer ${creds.accessToken}`,
       'Content-Type': 'application/json',
     },
   });
+
+  // 🔍 Log the response
+  console.log('✅ WhatsApp Response:', JSON.stringify(data, null, 2));
 
   if (data.error) {
     throw new ApiError(400, data.error.message || 'WhatsApp API error');

@@ -9,6 +9,13 @@ const variantSchema = new mongoose.Schema({
 const templateSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
+    whatsappTemplateName: {
+      type: String,
+      required: true,
+      trim: true,
+      // Optional: add a unique index if you want to avoid duplicates
+      // unique: true,
+    },
     category: {
       type: String,
       enum: ['delivery', 'reminder', 'thanks', 'custom'],
