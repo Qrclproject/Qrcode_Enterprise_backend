@@ -33,7 +33,10 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json());
+// ─── Increase request body size limits ──────────────────────────
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
 app.use(generalLimiter);
 
 // Routes

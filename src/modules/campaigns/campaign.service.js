@@ -21,19 +21,15 @@ const extractPlaceholders = (body) => {
   return matches.map(m => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
 };
 
-const buildBodyParameters = (recipient, placeholderNumbers) => {
-  const fieldMap = {
-    1: recipient.name || '',
-    2: recipient.event || '',
-    3: recipient.date || '',
-    4: recipient.time || '',
-    5: recipient.venue || '',
-    6: recipient.feedbackLink || '',
-  };
-  return placeholderNumbers.map(num => ({
-    type: 'text',
-    text: fieldMap[num] || '',
-  }));
+// ✅ DYNAMIC: Build body parameters using the campaign's stored mapping
+const buildBodyParameters = (recipient, placeholderNumbers, mapping) => {
+  return placeholderNumbers.map(num => {
+    // Get the column name for this placeholder number from the mapping
+    const columnName = mapping?.[String(num)] || '';
+    // Get the value from the recipient using the column name
+    const value = columnName ? (recipient[columnName] || '') : '';
+    return { type: 'text', text: value };
+  });
 };
 
 const validateTemplateId = (templateId) => {
@@ -77,8 +73,11 @@ const launchCampaign = async (campaignId) => {
       const variant = template.variants[variantIndex];
       if (!variant) throw new Error(`Variant at index ${variantIndex} not found`);
 
+      // Extract placeholder numbers from the variant body
       const placeholders = extractPlaceholders(variant.body);
-      const bodyParams = buildBodyParameters(recipient, placeholders);
+      
+      // ✅ DYNAMIC: Build body parameters using the campaign's mapping
+      const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
       if (recipient.qrUrl) {
@@ -162,7 +161,9 @@ const retryFailedRecipients = async (campaignId) => {
       if (!variant) throw new Error('Variant not found');
 
       const placeholders = extractPlaceholders(variant.body);
-      const bodyParams = buildBodyParameters(recipient, placeholders);
+      
+      // ✅ DYNAMIC: Build body parameters using the campaign's mapping
+      const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
       if (recipient.qrUrl) {
