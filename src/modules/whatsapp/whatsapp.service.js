@@ -1,6 +1,6 @@
 const axios = require('axios');
 const config = require('../../config');
-const Settings = require('../settings/settings.model');   // new – to read saved API credentials
+const Settings = require('../settings/settings.model');
 const ApiError = require('../../utils/apiError');
 
 // ─── Helper: get credentials (database first, then .env) ──────────
@@ -67,6 +67,7 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
   }
   return data;
 };
+
 // ─── Send a test message (now also accepts userId) ────────────────
 const sendTestMessage = async (to, templateName, variables, userId = null) => {
   const components = [];
@@ -76,16 +77,36 @@ const sendTestMessage = async (to, templateName, variables, userId = null) => {
       parameters: [{ type: 'image', image: { link: variables.qrUrl } }],
     });
   }
+  // Build body parameters from variables object
+  // For dynamic placeholders, we assume variables contains keys 1,2,3,... or name, event, date
+  // We'll map any keys that are numbers to parameters in order
+  const bodyParams = [];
+  // If variables has numeric keys, use them in order
+  const numericKeys = Object.keys(variables)
+    .filter(k => !isNaN(k) && k !== 'qrUrl')
+    .sort((a, b) => Number(a) - Number(b));
+  if (numericKeys.length > 0) {
+    numericKeys.forEach(key => {
+      bodyParams.push({ type: 'text', text: variables[key] || '' });
+    });
+  } else {
+    // Fallback to legacy fields: name, event, date
+    bodyParams.push({ type: 'text', text: variables.name || 'Test User' });
+    bodyParams.push({ type: 'text', text: variables.event || 'Test Event' });
+    bodyParams.push({ type: 'text', text: variables.date || '2026-01-01' });
+  }
+
   components.push({
     type: 'body',
-    parameters: [
-      { type: 'text', text: variables.name || 'Test User' },
-      { type: 'text', text: variables.event || 'Test Event' },
-      { type: 'text', text: variables.date || '2026-01-01' },
-    ],
+    parameters: bodyParams,
   });
 
   return sendTemplateMessage(to, templateName, components, userId);
 };
 
-module.exports = { sendTemplateMessage, sendTestMessage };
+// ─── Exports ──────────────────────────────────────────────────────
+module.exports = {
+  sendTemplateMessage,
+  sendTestMessage,
+  getCredentials, // 👈 Now exported for health check and other uses
+};

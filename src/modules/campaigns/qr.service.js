@@ -35,7 +35,7 @@ const uploadToCloudinary = (buffer, publicId) =>
  * Generate final QR image (plain or overlaid on a design).
  * @param {Object} recipient
  * @param {string} campaignId
- * @param {Object|null} design – { imageUrl, qrPosition } or null
+ * @param {Object|null} design – { imageUrl, qrPosition, qrPadding } or null
  * @returns {Promise<string>} – Cloudinary URL
  */
 const generateRecipientQR = async (recipient, campaignId, design = null) => {
@@ -44,7 +44,14 @@ const generateRecipientQR = async (recipient, campaignId, design = null) => {
 
   let finalBuffer = qrBuffer;
   if (design) {
-    finalBuffer = await overlayQROntoDesign(design.imageUrl, design.qrPosition, qrBuffer);
+    // Convert qrPadding percentage (0-50) to a fraction (0-0.5) for the overlay
+    const paddingFraction = design.qrPadding != null ? design.qrPadding / 100 : 0.15;
+    finalBuffer = await overlayQROntoDesign(
+      design.imageUrl,
+      design.qrPosition,
+      qrBuffer,
+      paddingFraction
+    );
   }
 
   const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;

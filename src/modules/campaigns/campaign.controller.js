@@ -3,6 +3,7 @@ const campaignService = require('./campaign.service');
 const Campaign = require('./campaign.model');
 const qrService = require('./qr.service');
 const ApiError = require('../../utils/apiError');
+const { deleteResources } = require('../../utils/cloudinaryCleanup'); // 👈 import
 
 // ─── Existing CRUD functions ────────────────────────────────────
 const create = asyncHandler(async (req, res) => {
@@ -73,16 +74,57 @@ const getQRProgress = asyncHandler(async (req, res) => {
     status: campaign.qrGenerationStatus?.status || 'pending',
   });
 });
+
 const getById = asyncHandler(async (req, res) => {
   const campaign = await campaignService.getCampaignById(req.params.campaignId);
   res.json({ success: true, data: campaign });
 });
 
+// ─── DELETE ALL campaigns for the user ──────────────────────────
+const deleteAll = asyncHandler(async (req, res) => {
+  const userId = req.user.userId;
+  const campaigns = await Campaign.find({ userId });
+  if (campaigns.length === 0) {
+    return res.json({ success: true, message: 'No campaigns to delete' });
+  }
+
+  // Collect all QR public IDs from all campaigns
+  const allPublicIds = [];
+  for (const campaign of campaigns) {
+    for (const recipient of campaign.recipients) {
+      if (recipient.qrUrl && recipient.qrUrl.includes('cloudinary.com')) {
+        const parts = recipient.qrUrl.split('/');
+        const folderAndFile = parts.slice(parts.indexOf('upload') + 2).join('/');
+        const publicId = folderAndFile.replace(/\.[^.]+$/, '');
+        allPublicIds.push(publicId);
+      }
+    }
+  }
+
+  // Delete images from Cloudinary in batches
+  if (allPublicIds.length > 0) {
+    const batchSize = 100;
+    for (let i = 0; i < allPublicIds.length; i += batchSize) {
+      const batch = allPublicIds.slice(i, i + batchSize);
+      await deleteResources(batch);
+    }
+  }
+
+  // Delete all campaigns from DB
+  await Campaign.deleteMany({ userId });
+
+  res.json({
+    success: true,
+    message: `Deleted ${campaigns.length} campaigns and ${allPublicIds.length} images`,
+  });
+});
+
+// ─── Background QR processing ────────────────────────────────────
 async function processQRCodes(campaignId) {
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign || campaign.qrGenerationStatus?.status !== 'processing') return;
 
-  const design = campaign.designId || null;   // will be null if no design assigned
+  const design = campaign.designId || null;
 
   const recipients = campaign.recipients;
   for (let i = 0; i < recipients.length; i++) {
@@ -110,5 +152,6 @@ module.exports = {
   remove,
   generateQRs,
   getQRProgress,
-  getById,           // <-- add this
+  getById,
+  deleteAll, // 👈 export
 };

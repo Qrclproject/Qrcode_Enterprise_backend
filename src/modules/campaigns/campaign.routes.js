@@ -12,8 +12,12 @@ router.post('/launch', auth, validate(launchCampaignSchema), ctrl.launch);
 router.post('/:campaignId/retry', auth, validate(retryFailedSchema), ctrl.retryFailed);
 router.delete('/:campaignId', auth, ctrl.remove);
 router.get('/:campaignId', auth, ctrl.getById);
-// New QR generation routes
+
+// QR generation routes
 router.post('/:campaignId/generate-qrs', auth, ctrl.generateQRs);
 router.get('/:campaignId/qr-progress', auth, ctrl.getQRProgress);
+
+// ✅ Delete ALL campaigns for the user
+router.delete('/', auth, ctrl.deleteAll);
 
 module.exports = router;
