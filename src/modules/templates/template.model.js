@@ -13,17 +13,23 @@ const templateSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
-      // Optional: add a unique index if you want to avoid duplicates
-      // unique: true,
     },
     category: {
       type: String,
-      enum: ['delivery', 'reminder', 'thanks', 'custom'],
+      enum: ['delivery', 'reminder', 'thanks', 'custom', 'marketing'],
       default: 'delivery',
     },
     showQR: { type: Boolean, default: true },
     usageCount: { type: Number, default: 0 },
     variants: [variantSchema],
+    // ─── CTA Button ──────────────────────────────────────────
+    buttonType: {
+      type: String,
+      enum: ['none', 'phone_number', 'url'],
+      default: 'none',
+    },
+    buttonText: { type: String, default: '' },
+    buttonValue: { type: String, default: '' },
   },
   { timestamps: true }
 );
