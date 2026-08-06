@@ -3,21 +3,25 @@ const User = require('./auth.model');
 const config = require('../../config');
 const ApiError = require('../../utils/apiError');
 
-const generateToken = (userId, email, role) => {
-  return jwt.sign({ userId, email, role }, config.jwtSecret, {
-    expiresIn: config.jwtExpiresIn,
-  });
+const generateToken = (user) => {
+  return jwt.sign(
+    {
+      userId: user._id,
+      email: user.email,
+      role: user.role,
+      permissions: user.permissions || [],
+    },
+    config.jwtSecret,
+    { expiresIn: config.jwtExpiresIn }
+  );
 };
 
-// ─── Register (admin only) ──────────────────────────────────────
 const register = async ({ name, email, password }) => {
   const existingUser = await User.findOne({ email });
-  if (existingUser) {
-    throw new ApiError(400, 'Email already registered');
-  }
+  if (existingUser) throw new ApiError(400, 'Email already registered');
 
   const user = await User.create({ name, email, password, role: 'admin' });
-  const token = generateToken(user._id, user.email, user.role);
+  const token = generateToken(user);
 
   return {
     token,
@@ -25,24 +29,20 @@ const register = async ({ name, email, password }) => {
   };
 };
 
-// ─── Login ──────────────────────────────────────────────────────
 const login = async ({ email, password }) => {
   const user = await User.findOne({ email });
-  if (!user) {
-    throw new ApiError(401, 'Invalid email or password');
-  }
+  if (!user) throw new ApiError(401, 'Invalid email or password');
 
   const isMatch = await user.comparePassword(password);
-  if (!isMatch) {
-    throw new ApiError(401, 'Invalid email or password');
-  }
+  if (!isMatch) throw new ApiError(401, 'Invalid email or password');
 
-  const token = generateToken(user._id, user.email, user.role);
+  const token = generateToken(user);
   return {
     token,
     user: { id: user._id, name: user.name, email: user.email, role: user.role, permissions: user.permissions },
   };
 };
+
 
 // ─── Agent management ──────────────────────────────────────────
 const createAgent = async (adminId, { email, name, password, permissions }) => {
