@@ -1,7 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const designService = require('./design.service');
 const Design = require('./design.model');
-const ApiError = require('../../utils/apiError');  // ✅ correct path
+const ApiError = require('../../utils/apiError');
 
 // POST /api/designs
 const create = asyncHandler(async (req, res) => {
@@ -41,7 +41,7 @@ const create = asyncHandler(async (req, res) => {
 
   const design = await designService.createDesign(
     {
-      userId: req.user.userId,
+      userId: req.user._id, // ✅ fixed
       name: name.trim(),
       qrPosition: qrPos,
       qrPadding: padding,
@@ -54,7 +54,7 @@ const create = asyncHandler(async (req, res) => {
 
 // GET /api/designs
 const getAll = asyncHandler(async (req, res) => {
-  const designs = await designService.getDesignsByUser(req.user.userId);
+  const designs = await designService.getDesignsByUser(req.user._id); // ✅ fixed
   res.json({ success: true, data: designs });
 });
 
@@ -63,7 +63,7 @@ const updateDesign = asyncHandler(async (req, res) => {
   const { designId } = req.params;
   const { name, qrPosition, qrPadding } = req.body;
 
-  const design = await Design.findOne({ _id: designId, userId: req.user.userId });
+  const design = await Design.findOne({ _id: designId, userId: req.user._id }); // ✅ fixed
   if (!design) throw new ApiError(404, 'Design not found');
 
   if (name !== undefined) design.name = name.trim();
@@ -97,7 +97,7 @@ const updateDesign = asyncHandler(async (req, res) => {
 // DELETE /api/designs/:designId
 const deleteDesign = asyncHandler(async (req, res) => {
   const { designId } = req.params;
-  const design = await Design.findOneAndDelete({ _id: designId, userId: req.user.userId });
+  const design = await Design.findOneAndDelete({ _id: designId, userId: req.user._id }); // ✅ fixed
   if (!design) throw new ApiError(404, 'Design not found');
   res.json({ success: true, message: 'Design deleted' });
 });
