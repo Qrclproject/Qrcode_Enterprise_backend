@@ -1,32 +1,39 @@
 const mongoose = require('mongoose');
 
-// ─── Recipient schema – now flexible to hold any spreadsheet columns ───
+const scanHistorySchema = new mongoose.Schema({
+  phone: String,
+  name: String,
+  timestamp: { type: Date, default: Date.now },
+  status: { type: String, enum: ['success', 'failed'] },
+  message: String, // error message if failed
+  scannedBy: { type: String, default: 'system' }, // future: user ID
+});
+
 const recipientSchema = new mongoose.Schema(
   {
-    phone: String,            // required – the recipient's phone number
-    name: String,             // legacy field – can be removed, but kept for compatibility
-    event: String,            // legacy – kept for backward compatibility
-    date: String,             // legacy – kept for backward compatibility
-    qrUrl: String,            // generated QR code URL
+    phone: String,
+    name: String,
+    event: String,
+    date: String,
+    qrUrl: String,
     status: {
       type: String,
       enum: ['pending', 'sent', 'failed'],
       default: 'pending',
     },
     failureReason: String,
-    // Any additional columns from the spreadsheet will be stored here
-    // because we set strict: false below
+    checkedIn: { type: Boolean, default: false },
+    checkedInAt: { type: Date },
   },
-  { strict: false } // 🔑 Allow any extra fields (time, venue, dressCode, etc.)
+  { strict: false }
 );
 
-// ─── Campaign schema ──────────────────────────────────────────────────
 const campaignSchema = new mongoose.Schema(
   {
     name: String,
-    templateId: String,        // reference to the Template _id
-    templateName: String,      // legacy, can be derived
-    templateKey: String,       // legacy fallback
+    templateId: String,
+    templateName: String,
+    templateKey: String,
     recipients: [recipientSchema],
     batchSize: { type: Number, default: 10 },
     waitValue: { type: Number, default: 5 },
@@ -47,27 +54,10 @@ const campaignSchema = new mongoose.Schema(
     },
     delivered: { type: Number, default: 0 },
     failed: { type: Number, default: 0 },
-    activeVariants: [Number],   // indices of active variants in the template
-    variants: [String],         // legacy – kept for reference
-
-    // ✅ Dynamic mapping – can contain:
-    //   phone: "Phone Number"
-    //   qr: "QR Code Image URL"
-    //   "1": "Attendee Name"
-    //   "2": "Event Name"
-    //   "3": "Date"
-    //   "4": "Time"
-    //   ... up to any number
-    mapping: {
-      type: Object,
-      default: {},
-    },
-
-    designId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Design',
-    },
-
+    activeVariants: [Number],
+    variants: [String],
+    mapping: { type: Object, default: {} },
+    designId: { type: mongoose.Schema.Types.ObjectId, ref: 'Design' },
     qrGenerationStatus: {
       total: Number,
       completed: { type: Number, default: 0 },
@@ -77,6 +67,7 @@ const campaignSchema = new mongoose.Schema(
         default: 'pending',
       },
     },
+    scanHistory: [scanHistorySchema], // 👈 new
   },
   { timestamps: true }
 );

@@ -4,6 +4,7 @@ const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
 const { deleteResources } = require('../../utils/cloudinaryCleanup');
 const mongoose = require('mongoose');
+const { decrypt } = require('../../utils/encryption');
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
@@ -21,12 +22,9 @@ const extractPlaceholders = (body) => {
   return matches.map(m => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
 };
 
-// ✅ DYNAMIC: Build body parameters using the campaign's stored mapping
 const buildBodyParameters = (recipient, placeholderNumbers, mapping) => {
   return placeholderNumbers.map(num => {
-    // Get the column name for this placeholder number from the mapping
     const columnName = mapping?.[String(num)] || '';
-    // Get the value from the recipient using the column name
     const value = columnName ? (recipient[columnName] || '') : '';
     return { type: 'text', text: value };
   });
@@ -73,10 +71,7 @@ const launchCampaign = async (campaignId) => {
       const variant = template.variants[variantIndex];
       if (!variant) throw new Error(`Variant at index ${variantIndex} not found`);
 
-      // Extract placeholder numbers from the variant body
       const placeholders = extractPlaceholders(variant.body);
-      
-      // ✅ DYNAMIC: Build body parameters using the campaign's mapping
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
@@ -161,8 +156,6 @@ const retryFailedRecipients = async (campaignId) => {
       if (!variant) throw new Error('Variant not found');
 
       const placeholders = extractPlaceholders(variant.body);
-      
-      // ✅ DYNAMIC: Build body parameters using the campaign's mapping
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
@@ -220,6 +213,106 @@ const deleteCampaign = async (campaignId) => {
   return { deleted: true, imagesRemoved: publicIds.length };
 };
 
+// ─── ✅ Check‑in recipient (with decryption & logging) ─────────────
+const checkInRecipient = async (campaignId, qrData) => {
+  let rawData;
+  try {
+    rawData = decrypt(qrData);
+  } catch (err) {
+    throw new ApiError(400, 'Invalid QR code: decryption failed');
+  }
+
+  const parts = rawData.split('_');
+  if (parts.length < 2) {
+    throw new ApiError(400, 'Invalid QR code data');
+  }
+  const [campaignIdFromQR, phone] = parts;
+
+  if (campaignIdFromQR !== campaignId) {
+    throw new ApiError(400, 'QR code does not belong to this event');
+  }
+
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) {
+    throw new ApiError(404, 'Event not found');
+  }
+
+  const recipient = campaign.recipients.find(r => r.phone === phone);
+  if (!recipient) {
+    campaign.scanHistory.push({
+      phone,
+      name: 'Unknown',
+      status: 'failed',
+      message: 'Recipient not found for this event',
+    });
+    await campaign.save();
+    throw new ApiError(404, 'Recipient not found for this event');
+  }
+
+  if (recipient.checkedIn) {
+    campaign.scanHistory.push({
+      phone: recipient.phone,
+      name: recipient.name || recipient.phone,
+      status: 'failed',
+      message: 'Already checked in',
+    });
+    await campaign.save();
+    throw new ApiError(400, 'This QR code has already been used for check‑in');
+  }
+
+  // Success
+  recipient.checkedIn = true;
+  recipient.checkedInAt = new Date();
+  campaign.scanHistory.push({
+    phone: recipient.phone,
+    name: recipient.name || recipient.phone,
+    status: 'success',
+    message: 'Checked in successfully',
+  });
+  await campaign.save();
+
+  return {
+    campaign: campaign.name,
+    recipient: {
+      name: recipient.name || recipient.phone,
+      phone: recipient.phone,
+      event: recipient.event || '',
+      date: recipient.date || '',
+      ...recipient._doc,
+    },
+  };
+};
+
+// ─── ✅ Get scan history for a campaign ────────────────────────────
+const getScanHistory = async (campaignId, filters = {}) => {
+  const { search, page = 1, limit = 20 } = filters;
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  let history = campaign.scanHistory || [];
+
+  if (search) {
+    const s = search.toLowerCase();
+    history = history.filter(h =>
+      (h.name && h.name.toLowerCase().includes(s)) ||
+      (h.phone && h.phone.toLowerCase().includes(s))
+    );
+  }
+
+  history = history.sort((a, b) => b.timestamp - a.timestamp);
+  const total = history.length;
+  const start = (page - 1) * limit;
+  const end = start + limit;
+  const data = history.slice(start, end);
+
+  return {
+    history: data,
+    total,
+    page,
+    totalPages: Math.ceil(total / limit),
+  };
+};
+
 // ─── Exports ─────────────────────────────────────────────────────────
 module.exports = {
   createCampaign,
@@ -228,4 +321,6 @@ module.exports = {
   retryFailedRecipients,
   deleteCampaign,
   getCampaignById,
+  checkInRecipient,
+  getScanHistory,
 };

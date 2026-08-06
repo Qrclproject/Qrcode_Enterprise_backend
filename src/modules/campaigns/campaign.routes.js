@@ -13,11 +13,17 @@ router.post('/:campaignId/retry', auth, validate(retryFailedSchema), ctrl.retryF
 router.delete('/:campaignId', auth, ctrl.remove);
 router.get('/:campaignId', auth, ctrl.getById);
 
-// QR generation routes
+// QR generation
 router.post('/:campaignId/generate-qrs', auth, ctrl.generateQRs);
 router.get('/:campaignId/qr-progress', auth, ctrl.getQRProgress);
 
-// ✅ Delete ALL campaigns for the user
+// Delete ALL
 router.delete('/', auth, ctrl.deleteAll);
+
+// ─── Check‑in ────────────────────────────────────────────────────
+router.post('/:campaignId/check-in', auth, ctrl.checkIn);
+
+// ─── Scan history ──────────────────────────────────────────────
+router.get('/:campaignId/scan-history', auth, ctrl.getScanHistory);
 
 module.exports = router;

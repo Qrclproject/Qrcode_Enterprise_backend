@@ -2,6 +2,7 @@ const QRCode = require('qrcode');
 const cloudinary = require('cloudinary').v2;
 const config = require('../../config');
 const { overlayQROntoDesign } = require('./overlay.service');
+const { encrypt } = require('../../utils/encryption');
 
 cloudinary.config({
   cloud_name: config.cloudinary.cloudName,
@@ -31,31 +32,34 @@ const uploadToCloudinary = (buffer, publicId) =>
     stream.end(buffer);
   });
 
-/**
- * Generate final QR image (plain or overlaid on a design).
- * @param {Object} recipient
- * @param {string} campaignId
- * @param {Object|null} design – { imageUrl, qrPosition, qrPadding } or null
- * @returns {Promise<string>} – Cloudinary URL
- */
 const generateRecipientQR = async (recipient, campaignId, design = null) => {
-  const data = `${campaignId}_${recipient.phone}_${Date.now()}`;
-  const qrBuffer = await generateQRBuffer(data);
+  try {
+    console.log(`🔄 Generating QR for recipient ${recipient._id} (${recipient.phone})`);
+    
+    const rawData = `${campaignId}_${recipient.phone}_${Date.now()}`;
+    const encryptedData = encrypt(rawData);
+    const qrBuffer = await generateQRBuffer(encryptedData);
 
-  let finalBuffer = qrBuffer;
-  if (design) {
-    // Convert qrPadding percentage (0-50) to a fraction (0-0.5) for the overlay
-    const paddingFraction = design.qrPadding != null ? design.qrPadding / 100 : 0.15;
-    finalBuffer = await overlayQROntoDesign(
-      design.imageUrl,
-      design.qrPosition,
-      qrBuffer,
-      paddingFraction
-    );
+    let finalBuffer = qrBuffer;
+    if (design) {
+      const paddingFraction = design.qrPadding != null ? design.qrPadding / 100 : 0.15;
+      console.log(`   Using design: ${design.name}, padding: ${paddingFraction}`);
+      finalBuffer = await overlayQROntoDesign(
+        design.imageUrl,
+        design.qrPosition,
+        qrBuffer,
+        paddingFraction
+      );
+    }
+
+    const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;
+    const url = await uploadToCloudinary(finalBuffer, publicId);
+    console.log(`✅ QR generated for ${recipient.phone}: ${url}`);
+    return url;
+  } catch (err) {
+    console.error(`❌ QR generation failed for ${recipient.phone}:`, err.message);
+    throw err; // rethrow so caller can handle
   }
-
-  const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;
-  return uploadToCloudinary(finalBuffer, publicId);
 };
 
 module.exports = { generateRecipientQR };
