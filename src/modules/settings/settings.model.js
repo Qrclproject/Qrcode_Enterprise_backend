@@ -27,6 +27,8 @@ const settingsSchema = new mongoose.Schema(
       weeklySummary: { type: Boolean, default: false },
       email: String,
     },
+    // ─── Passcode for settings protection ──────────────────────
+    passcode: { type: String, default: '' },
   },
   { timestamps: true }
 );

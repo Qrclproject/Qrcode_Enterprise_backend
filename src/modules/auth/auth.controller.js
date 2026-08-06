@@ -11,4 +11,27 @@ const login = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
-module.exports = { register, login };
+// ─── Agent management ──────────────────────────────────────────
+const createAgent = asyncHandler(async (req, res) => {
+  const agent = await authService.createAgent(req.user.id, req.body);
+  res.status(201).json({ success: true, data: agent });
+});
+
+const getAgents = asyncHandler(async (req, res) => {
+  const agents = await authService.getAgents();
+  res.json({ success: true, data: agents });
+});
+
+const updateAgent = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+  const agent = await authService.updateAgent(agentId, req.body);
+  res.json({ success: true, data: agent });
+});
+
+const deleteAgent = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+  await authService.deleteAgent(agentId);
+  res.json({ success: true, message: 'Agent deleted' });
+});
+
+module.exports = { register, login, createAgent, getAgents, updateAgent, deleteAgent };
