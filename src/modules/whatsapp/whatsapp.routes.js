@@ -1,8 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios'); // 👈 needed for API call
+const axios = require('axios');
 const { verifyWebhook, handleWebhookEvent } = require('./whatsapp.webhook');
-const { sendTestMessage, getCredentials } = require('./whatsapp.service');
+const {
+  sendTestMessage,
+  getCredentials,
+  checkNumbers,   // 👈 import the new function
+} = require('./whatsapp.service');
 const auth = require('../../middleware/auth');
 const asyncHandler = require('../../utils/asyncHandler');
 
@@ -10,22 +14,19 @@ const asyncHandler = require('../../utils/asyncHandler');
 router.get('/webhook', verifyWebhook);
 router.post('/webhook', handleWebhookEvent);
 
-// ✅ True health check – validates WhatsApp API credentials
+// Health check – validates WhatsApp API credentials
 router.get('/health', async (req, res) => {
   try {
-    // Get credentials (either from DB or .env fallback)
     const { phoneNumberId, accessToken } = await getCredentials();
-    
-    // Make a lightweight API call to verify the token and phone number
+
     const url = `https://graph.facebook.com/v22.0/${phoneNumberId}`;
     const response = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
-      timeout: 5000, // 5 seconds
+      timeout: 5000,
     });
 
-    // If we get a valid response with an id, credentials are good
     if (response.data && response.data.id) {
       return res.json({
         status: 'ok',
@@ -38,7 +39,6 @@ router.get('/health', async (req, res) => {
       throw new Error('Invalid API response');
     }
   } catch (error) {
-    // Log the error but don't expose too much
     console.error('WhatsApp health check failed:', error.message);
     return res.status(503).json({
       status: 'error',
@@ -47,7 +47,8 @@ router.get('/health', async (req, res) => {
     });
   }
 });
-// Add this near other routes
+
+// Check numbers – protected
 router.post('/check-numbers', auth, asyncHandler(async (req, res) => {
   const { phones } = req.body;
   if (!Array.isArray(phones) || phones.length === 0) {
@@ -56,6 +57,7 @@ router.post('/check-numbers', auth, asyncHandler(async (req, res) => {
   const results = await checkNumbers(phones);
   res.json({ success: true, results });
 }));
+
 // Test send – protected
 router.post('/test-send', auth, asyncHandler(async (req, res) => {
   const { phone, templateName, variables } = req.body;

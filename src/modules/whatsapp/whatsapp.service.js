@@ -49,23 +49,22 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
     },
   };
 
-  // 🔍 Enhanced log
-  console.log('\n===== WHATSAPP REQUEST (FULL) =====');
-  console.log('URL:', url);
-  console.log('Body:', JSON.stringify(body, null, 2));
-  console.log('=====================================\n');
+  try {
+    const { data } = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${creds.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
 
-  const { data } = await axios.post(url, body, {
-    headers: {
-      Authorization: `Bearer ${creds.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  if (data.error) {
-    throw new ApiError(400, data.error.message || 'WhatsApp API error');
+    if (data.error) {
+      throw new ApiError(400, data.error.message || 'WhatsApp API error');
+    }
+    return data;
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(400, err.response?.data?.error?.message || err.message);
   }
-  return data;
 };
 
 // ─── Send a test message (now also accepts userId) ────────────────
@@ -77,20 +76,17 @@ const sendTestMessage = async (to, templateName, variables, userId = null) => {
       parameters: [{ type: 'image', image: { link: variables.qrUrl } }],
     });
   }
-  // Build body parameters from variables object
-  // For dynamic placeholders, we assume variables contains keys 1,2,3,... or name, event, date
-  // We'll map any keys that are numbers to parameters in order
+
   const bodyParams = [];
-  // If variables has numeric keys, use them in order
   const numericKeys = Object.keys(variables)
     .filter(k => !isNaN(k) && k !== 'qrUrl')
     .sort((a, b) => Number(a) - Number(b));
+
   if (numericKeys.length > 0) {
     numericKeys.forEach(key => {
       bodyParams.push({ type: 'text', text: variables[key] || '' });
     });
   } else {
-    // Fallback to legacy fields: name, event, date
     bodyParams.push({ type: 'text', text: variables.name || 'Test User' });
     bodyParams.push({ type: 'text', text: variables.event || 'Test Event' });
     bodyParams.push({ type: 'text', text: variables.date || '2026-01-01' });
@@ -104,25 +100,41 @@ const sendTestMessage = async (to, templateName, variables, userId = null) => {
   return sendTemplateMessage(to, templateName, components, userId);
 };
 
+// ─── Check if phone numbers are valid WhatsApp accounts ──────────
 const checkNumbers = async (phones) => {
+  if (!Array.isArray(phones) || phones.length === 0) {
+    throw new ApiError(400, 'phones array is required');
+  }
+
   const creds = await getCredentials();
+  if (!creds.phoneNumberId || !creds.accessToken) {
+    throw new ApiError(400, 'WhatsApp API credentials are not configured');
+  }
+
   const url = `https://graph.facebook.com/v22.0/${creds.phoneNumberId}/contacts`;
   const body = {
     contacts: phones.map(input => ({ input })),
     block: false,
   };
-  const { data } = await axios.post(url, body, {
-    headers: {
-      Authorization: `Bearer ${creds.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  // data.contacts is an array of { input, status, wa_id? }
-  return data.contacts || [];
+
+  try {
+    const { data } = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${creds.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    // data.contacts is an array of { input, status, wa_id? }
+    return data.contacts || [];
+  } catch (err) {
+    throw new ApiError(400, err.response?.data?.error?.message || 'WhatsApp contacts check failed');
+  }
 };
+
 // ─── Exports ──────────────────────────────────────────────────────
 module.exports = {
   sendTemplateMessage,
-  sendTestMessage,checkNumbers,
-  getCredentials, // 👈 Now exported for health check and other uses
+  sendTestMessage,
+  getCredentials,
+  checkNumbers,
 };

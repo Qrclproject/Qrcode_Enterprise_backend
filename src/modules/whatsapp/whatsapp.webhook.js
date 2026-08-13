@@ -27,7 +27,6 @@ const handleWebhookEvent = async (req, res) => {
   if (statuses) {
     for (const status of statuses) {
       const { id: messageId, recipient_id: phone, status: deliveryStatus } = status;
-      // Update campaign recipient status based on phone
       const campaign = await Campaign.findOne({ 'recipients.phone': phone, status: 'sending' });
       if (campaign) {
         const recipient = campaign.recipients.find((r) => r.phone === phone);
