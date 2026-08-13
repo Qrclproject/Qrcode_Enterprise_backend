@@ -7,6 +7,13 @@ const scanHistorySchema = new mongoose.Schema({
   status: { type: String, enum: ['success', 'failed'] },
   message: String,
   scannedBy: { type: String, default: 'system' },
+  // 👇 NEW: store structured QR Data Content fields
+  qrDataFields: [
+    {
+      label: String,
+      value: String,
+    },
+  ],
 });
 
 const recipientSchema = new mongoose.Schema(

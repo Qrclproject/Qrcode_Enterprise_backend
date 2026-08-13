@@ -354,6 +354,7 @@ const checkInRecipient = async (campaignId, qrData) => {
     name: recipient.name || recipient.phone,
     status: 'success',
     message: 'Checked in successfully',
+    qrDataFields,   // ✅ store QR Data Content in scan history
   });
   await campaign.save();
 
