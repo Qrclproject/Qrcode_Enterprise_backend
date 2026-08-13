@@ -35,13 +35,28 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Campaign deleted' });
 });
 
-// ─── NEW: Upload static header image ───────────────────────────────
+// ─── Upload static header image (standalone) ───────────────────────
 const uploadHeaderImage = asyncHandler(async (req, res) => {
   if (!req.file) {
     throw new ApiError(400, 'Image file is required');
   }
   const imageUrl = await campaignService.uploadHeaderImage(req.file.buffer);
   res.json({ success: true, url: imageUrl });
+});
+
+// ─── Update header image / includeHeaderImage for an existing campaign ──
+const updateHeaderImage = asyncHandler(async (req, res) => {
+  const { campaignId } = req.params;
+  const { headerImageUrl, includeHeaderImage } = req.body;
+
+  console.log('🔧 updateHeaderImage controller received:', { headerImageUrl, includeHeaderImage });
+
+  const campaign = await campaignService.updateCampaignHeaderImage(campaignId, {
+    headerImageUrl: headerImageUrl !== undefined ? headerImageUrl : undefined,
+    includeHeaderImage: includeHeaderImage !== undefined ? includeHeaderImage : undefined,
+  });
+
+  res.json({ success: true, data: campaign });
 });
 
 // ─── QR generation ──────────────────────────────────────────────────
@@ -63,7 +78,6 @@ const generateQRs = asyncHandler(async (req, res) => {
 
   console.log(`🚀 Starting QR generation for campaign ${campaignId} with ${campaign.recipients.length} recipients`);
 
-  // Start background processing – we don't await so it runs asynchronously
   processQRCodes(campaign._id).catch(err => {
     console.error('❌ QR generation background job crashed:', err.message);
   });
@@ -108,7 +122,6 @@ const deleteAll = asyncHandler(async (req, res) => {
     return res.json({ success: true, message: 'No campaigns to delete' });
   }
 
-  // Collect all QR public IDs
   const allPublicIds = [];
   for (const campaign of campaigns) {
     for (const recipient of campaign.recipients) {
@@ -121,7 +134,6 @@ const deleteAll = asyncHandler(async (req, res) => {
     }
   }
 
-  // Delete from Cloudinary
   if (allPublicIds.length > 0) {
     const batchSize = 100;
     for (let i = 0; i < allPublicIds.length; i += batchSize) {
@@ -130,7 +142,6 @@ const deleteAll = asyncHandler(async (req, res) => {
     }
   }
 
-  // Delete from DB
   await Campaign.deleteMany({ userId });
 
   res.json({
@@ -168,7 +179,6 @@ async function processQRCodes(campaignId) {
   const design = campaign.designId || null;
   const mapping = campaign.mapping || {};
 
-  // Log the design
   if (design) {
     console.log(`🎨 Using design: ${design.name}`);
     console.log(`  qrConfig:`, design.qrConfig);
@@ -201,7 +211,8 @@ module.exports = {
   getHistory,
   retryFailed,
   remove,
-  uploadHeaderImage,   // 👈 NEW
+  uploadHeaderImage,
+  updateHeaderImage,
   generateQRs,
   getQRProgress,
   getById,

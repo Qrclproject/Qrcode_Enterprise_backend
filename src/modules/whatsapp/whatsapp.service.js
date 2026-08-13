@@ -46,6 +46,12 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
     },
   };
 
+  // 🔍 Log request
+  console.log('\n===== WHATSAPP REQUEST =====');
+  console.log('URL:', url);
+  console.log('Body:', JSON.stringify(body, null, 2));
+  console.log('=============================\n');
+
   try {
     const { data } = await axios.post(url, body, {
       headers: {
@@ -53,11 +59,24 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
         'Content-Type': 'application/json',
       },
     });
+
+    // ✅ Log response
+    console.log('\n===== WHATSAPP RESPONSE =====');
+    console.log('Status: 200 (success)');
+    console.log('Response:', JSON.stringify(data, null, 2));
+    console.log('==============================\n');
+
     if (data.error) {
       throw new ApiError(400, data.error.message || 'WhatsApp API error');
     }
     return data;
   } catch (err) {
+    // ❌ Log error response
+    console.error('\n===== WHATSAPP ERROR =====');
+    console.error('Status:', err.response?.status);
+    console.error('Data:', JSON.stringify(err.response?.data, null, 2));
+    console.error('===========================\n');
+
     if (err instanceof ApiError) throw err;
     throw new ApiError(400, err.response?.data?.error?.message || err.message);
   }

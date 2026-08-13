@@ -69,6 +69,35 @@ const uploadHeaderImage = (buffer) => {
   });
 };
 
+// ─── Update campaign header image / includeHeaderImage flag ───
+const updateCampaignHeaderImage = async (campaignId, updates) => {
+  console.log('🔧 updateCampaignHeaderImage called with:', { campaignId, updates });
+
+  // Defensive: if updates is a string (old behaviour), convert it
+  if (typeof updates === 'string') {
+    updates = { headerImageUrl: updates };
+  }
+
+  const updateFields = {};
+
+  if (updates.headerImageUrl !== undefined) {
+    updateFields.headerImageUrl = updates.headerImageUrl;
+  }
+  if (updates.includeHeaderImage !== undefined) {
+    updateFields.includeHeaderImage = updates.includeHeaderImage;
+  }
+
+  console.log('🔧 Final updateFields:', updateFields);
+
+  const campaign = await Campaign.findByIdAndUpdate(
+    campaignId,
+    updateFields,
+    { returnDocument: 'after', runValidators: true }
+  );
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+  return campaign;
+};
+
 // ─── Launch campaign ────────────────────────────────────────────────
 const launchCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
@@ -99,11 +128,8 @@ const launchCampaign = async (campaignId) => {
 
       const components = [];
 
-      // ✅ Add header image ONLY if template supports it AND (static header OR QR generation was enabled)
-      const hasHeaderImage = template.showQR !== false &&
-        (campaign.headerImageUrl || (campaign.designId && recipient.qrUrl));
-
-      if (hasHeaderImage) {
+      // ✅ Use explicit includeHeaderImage flag
+      if (campaign.includeHeaderImage && template.showQR !== false) {
         if (campaign.headerImageUrl) {
           components.push({
             type: 'header',
@@ -196,11 +222,7 @@ const retryFailedRecipients = async (campaignId) => {
 
       const components = [];
 
-      // ✅ Add header image ONLY if template supports it AND (static header OR QR generation was enabled)
-      const hasHeaderImage = template.showQR !== false &&
-        (campaign.headerImageUrl || (campaign.designId && recipient.qrUrl));
-
-      if (hasHeaderImage) {
+      if (campaign.includeHeaderImage && template.showQR !== false) {
         if (campaign.headerImageUrl) {
           components.push({
             type: 'header',
@@ -389,4 +411,5 @@ module.exports = {
   checkInRecipient,
   getScanHistory,
   uploadHeaderImage,
+  updateCampaignHeaderImage,
 };

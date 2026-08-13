@@ -23,13 +23,16 @@ router.get('/:campaignId/qr-progress', auth, ctrl.getQRProgress);
 // Delete ALL
 router.delete('/', auth, ctrl.deleteAll);
 
-// ─── NEW: Upload static header image ─────────────────────────────
+// Upload static header image (standalone)
 router.post('/upload-header', auth, upload.single('image'), ctrl.uploadHeaderImage);
 
-// ─── Check‑in ────────────────────────────────────────────────────
+// 👇 NEW: Update campaign header image after creation
+router.put('/:campaignId/header-image', auth, ctrl.updateHeaderImage);
+
+// Check‑in
 router.post('/:campaignId/check-in', auth, ctrl.checkIn);
 
-// ─── Scan history ──────────────────────────────────────────────
+// Scan history
 router.get('/:campaignId/scan-history', auth, ctrl.getScanHistory);
 
 module.exports = router;

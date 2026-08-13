@@ -58,8 +58,8 @@ const campaignSchema = new mongoose.Schema(
     variants: [String],
     mapping: { type: Object, default: {} },
     designId: { type: mongoose.Schema.Types.ObjectId, ref: 'Design' },
-    // 👇 NEW: Static header image URL for all recipients
     headerImageUrl: { type: String, default: '' },
+    includeHeaderImage: { type: Boolean, default: false },
     qrGenerationStatus: {
       total: Number,
       completed: { type: Number, default: 0 },

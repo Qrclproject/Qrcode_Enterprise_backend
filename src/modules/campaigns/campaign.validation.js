@@ -1,6 +1,5 @@
 const { z } = require('zod');
 
-// ─── Recipient schema ──────────────────────────────────────────────────
 const recipientSchema = z.object({
   phone: z.string().min(1, 'Phone number is required'),
   name: z.string().optional(),
@@ -9,7 +8,6 @@ const recipientSchema = z.object({
   qrUrl: z.string().optional(),
 });
 
-// ─── Create campaign schema ──────────────────────────────────────────
 const createCampaignSchema = z.object({
   body: z.object({
     name: z.string().optional(),
@@ -27,19 +25,17 @@ const createCampaignSchema = z.object({
       qr: z.string().optional(),
     }).catchall(z.string()).optional(),
     designId: z.string().optional(),
-    // 👇 NEW: Static header image URL
     headerImageUrl: z.string().optional(),
+    includeHeaderImage: z.boolean().optional(),
   }),
 });
 
-// ─── Launch campaign schema ──────────────────────────────────────────
 const launchCampaignSchema = z.object({
   body: z.object({
     campaignId: z.string().min(1, 'Campaign ID is required'),
   }),
 });
 
-// ─── Retry failed recipients schema ──────────────────────────────────
 const retryFailedSchema = z.object({
   params: z.object({
     campaignId: z.string().min(1, 'Campaign ID is required'),
