@@ -372,6 +372,7 @@ const checkInRecipient = async (campaignId, qrData) => {
 };
 
 // ─── Get scan history ───────────────────────────────────────────────
+// ─── Get scan history ───────────────────────────────────────────────
 const getScanHistory = async (campaignId, filters = {}) => {
   const { search, page = 1, limit = 20 } = filters;
   const campaign = await Campaign.findById(campaignId);
@@ -381,10 +382,20 @@ const getScanHistory = async (campaignId, filters = {}) => {
 
   if (search) {
     const s = search.toLowerCase();
-    history = history.filter(h =>
-      (h.name && h.name.toLowerCase().includes(s)) ||
-      (h.phone && h.phone.toLowerCase().includes(s))
-    );
+    history = history.filter(h => {
+      // Check name and phone (old scans)
+      if ((h.name && h.name.toLowerCase().includes(s)) || (h.phone && h.phone.toLowerCase().includes(s))) {
+        return true;
+      }
+      // Check QR Data Content fields (new scans)
+      if (h.qrDataFields && h.qrDataFields.length > 0) {
+        return h.qrDataFields.some(field =>
+          (field.label && field.label.toLowerCase().includes(s)) ||
+          (field.value && String(field.value).toLowerCase().includes(s))
+        );
+      }
+      return false;
+    });
   }
 
   history = history.sort((a, b) => b.timestamp - a.timestamp);
@@ -400,7 +411,6 @@ const getScanHistory = async (campaignId, filters = {}) => {
     totalPages: Math.ceil(total / limit),
   };
 };
-
 // ─── Exports ─────────────────────────────────────────────────────────
 module.exports = {
   createCampaign,
