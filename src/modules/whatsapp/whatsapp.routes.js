@@ -5,7 +5,7 @@ const { verifyWebhook, handleWebhookEvent } = require('./whatsapp.webhook');
 const {
   sendTestMessage,
   getCredentials,
-  checkNumbers,   // 👈 import the new function
+  checkNumbers,   // 👈 import
 } = require('./whatsapp.service');
 const auth = require('../../middleware/auth');
 const asyncHandler = require('../../utils/asyncHandler');
@@ -48,7 +48,7 @@ router.get('/health', async (req, res) => {
   }
 });
 
-// Check numbers – protected
+// Check numbers – protected (uses third‑party validation now)
 router.post('/check-numbers', auth, asyncHandler(async (req, res) => {
   const { phones } = req.body;
   if (!Array.isArray(phones) || phones.length === 0) {

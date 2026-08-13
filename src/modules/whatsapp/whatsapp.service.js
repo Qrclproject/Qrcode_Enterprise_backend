@@ -5,7 +5,6 @@ const ApiError = require('../../utils/apiError');
 
 // ─── Helper: get credentials (database first, then .env) ──────────
 const getCredentials = async (userId) => {
-  // If a user ID is provided, try to load their saved credentials
   if (userId) {
     try {
       const settings = await Settings.findOne({ userId });
@@ -21,12 +20,10 @@ const getCredentials = async (userId) => {
         };
       }
     } catch (err) {
-      // If database lookup fails, fall back to .env
       console.warn('Could not read settings from DB, using .env credentials:', err.message);
     }
   }
 
-  // Fallback – use environment variables (original behaviour)
   return {
     phoneNumberId: config.whatsapp.phoneNumberId,
     accessToken: config.whatsapp.accessToken,
@@ -56,7 +53,6 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
         'Content-Type': 'application/json',
       },
     });
-
     if (data.error) {
       throw new ApiError(400, data.error.message || 'WhatsApp API error');
     }
@@ -67,7 +63,7 @@ const sendTemplateMessage = async (to, templateName, components = [], userId = n
   }
 };
 
-// ─── Send a test message (now also accepts userId) ────────────────
+// ─── Send a test message ──────────────────────────────────────────
 const sendTestMessage = async (to, templateName, variables, userId = null) => {
   const components = [];
   if (variables.qrUrl) {
@@ -100,35 +96,58 @@ const sendTestMessage = async (to, templateName, variables, userId = null) => {
   return sendTemplateMessage(to, templateName, components, userId);
 };
 
-// ─── Check if phone numbers are valid WhatsApp accounts ──────────
+// ─── Third‑Party Number Validation ────────────────────────────────
 const checkNumbers = async (phones) => {
   if (!Array.isArray(phones) || phones.length === 0) {
     throw new ApiError(400, 'phones array is required');
   }
 
-  const creds = await getCredentials();
-  if (!creds.phoneNumberId || !creds.accessToken) {
-    throw new ApiError(400, 'WhatsApp API credentials are not configured');
+  const baseUrl = process.env.NUMBER_CHECK_API_URL;
+  const apiKey = process.env.NUMBER_CHECK_API_KEY;
+
+  if (!baseUrl || !apiKey) {
+    throw new ApiError(500, 'Third‑party number validation is not configured');
   }
 
-  const url = `https://graph.facebook.com/v22.0/${creds.phoneNumberId}/contacts`;
-  const body = {
-    contacts: phones.map(input => ({ input })),
-    block: false,
+  // Process with limited concurrency to avoid rate limits
+  const concurrency = 5;
+  const queue = [...phones];
+  const results = [];
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const phone = queue.shift();
+      try {
+        // Assumes provider returns { exists: boolean } on GET /{phone}
+        const { data } = await axios.get(`${baseUrl}/${encodeURIComponent(phone)}`, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+          timeout: 10000,
+        });
+
+        const exists = data?.exists === true;
+        results.push({ input: phone, status: exists ? 'valid' : 'invalid' });
+      } catch (err) {
+        // If individual check fails, mark as invalid and include error
+        results.push({
+          input: phone,
+          status: 'invalid',
+          error: err.response?.data?.message || err.message,
+        });
+      }
+    }
   };
 
-  try {
-    const { data } = await axios.post(url, body, {
-      headers: {
-        Authorization: `Bearer ${creds.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    // data.contacts is an array of { input, status, wa_id? }
-    return data.contacts || [];
-  } catch (err) {
-    throw new ApiError(400, err.response?.data?.error?.message || 'WhatsApp contacts check failed');
-  }
+  // Start workers
+  const workers = Array(Math.min(concurrency, phones.length))
+    .fill(null)
+    .map(() => worker());
+  await Promise.all(workers);
+
+  // Restore original order for easier frontend display
+  const resultMap = new Map(results.map(r => [r.input, r]));
+  return phones.map(phone => resultMap.get(phone) || { input: phone, status: 'invalid' });
 };
 
 // ─── Exports ──────────────────────────────────────────────────────
