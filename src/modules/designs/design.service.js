@@ -30,6 +30,9 @@ const createDesign = async (data, fileBuffer) => {
     imageUrl,
     qrPosition: data.qrPosition,
     qrPadding: data.qrPadding !== undefined ? data.qrPadding : 15,
+    qrConfig: data.qrConfig || {},
+    textOverlays: data.textOverlays || [],
+    qrDataFields: data.qrDataFields || [],
   });
   return design;
 };

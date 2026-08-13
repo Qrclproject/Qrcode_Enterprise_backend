@@ -104,9 +104,25 @@ const sendTestMessage = async (to, templateName, variables, userId = null) => {
   return sendTemplateMessage(to, templateName, components, userId);
 };
 
+const checkNumbers = async (phones) => {
+  const creds = await getCredentials();
+  const url = `https://graph.facebook.com/v22.0/${creds.phoneNumberId}/contacts`;
+  const body = {
+    contacts: phones.map(input => ({ input })),
+    block: false,
+  };
+  const { data } = await axios.post(url, body, {
+    headers: {
+      Authorization: `Bearer ${creds.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  // data.contacts is an array of { input, status, wa_id? }
+  return data.contacts || [];
+};
 // ─── Exports ──────────────────────────────────────────────────────
 module.exports = {
   sendTemplateMessage,
-  sendTestMessage,
+  sendTestMessage,checkNumbers,
   getCredentials, // 👈 Now exported for health check and other uses
 };

@@ -3,7 +3,15 @@ const designService = require('./design.service');
 const Design = require('./design.model');
 const ApiError = require('../../utils/apiError');
 
-// POST /api/designs
+const parseJsonField = (value) => {
+  if (!value) return undefined;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch { return undefined; }
+  }
+  return value;
+};
+
+// ─── CREATE ────────────────────────────────────────────────────────
 const create = asyncHandler(async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, message: 'Image file is required' });
@@ -39,12 +47,19 @@ const create = asyncHandler(async (req, res) => {
     }
   }
 
+  const qrConfig = parseJsonField(req.body.qrConfig) || {};
+  const textOverlays = parseJsonField(req.body.textOverlays) || [];
+  const qrDataFields = parseJsonField(req.body.qrDataFields) || [];
+
   const design = await designService.createDesign(
     {
-      userId: req.user._id, // ✅ fixed
+      userId: req.user._id,
       name: name.trim(),
       qrPosition: qrPos,
       qrPadding: padding,
+      qrConfig,
+      textOverlays,
+      qrDataFields,
     },
     req.file.buffer
   );
@@ -52,18 +67,18 @@ const create = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: design });
 });
 
-// GET /api/designs
+// ─── GET ALL ──────────────────────────────────────────────────────
 const getAll = asyncHandler(async (req, res) => {
-  const designs = await designService.getDesignsByUser(req.user._id); // ✅ fixed
+  const designs = await designService.getDesignsByUser(req.user._id);
   res.json({ success: true, data: designs });
 });
 
-// PUT /api/designs/:designId
+// ─── UPDATE ──────────────────────────────────────────────────────
 const updateDesign = asyncHandler(async (req, res) => {
   const { designId } = req.params;
   const { name, qrPosition, qrPadding } = req.body;
 
-  const design = await Design.findOne({ _id: designId, userId: req.user._id }); // ✅ fixed
+  const design = await Design.findOne({ _id: designId, userId: req.user._id });
   if (!design) throw new ApiError(404, 'Design not found');
 
   if (name !== undefined) design.name = name.trim();
@@ -90,14 +105,27 @@ const updateDesign = asyncHandler(async (req, res) => {
     design.qrPadding = num;
   }
 
+  if (req.body.qrConfig !== undefined) {
+    const config = parseJsonField(req.body.qrConfig);
+    if (config) design.qrConfig = config;
+  }
+  if (req.body.textOverlays !== undefined) {
+    const overlays = parseJsonField(req.body.textOverlays);
+    if (overlays) design.textOverlays = overlays;
+  }
+  if (req.body.qrDataFields !== undefined) {
+    const fields = parseJsonField(req.body.qrDataFields);
+    if (fields) design.qrDataFields = fields;
+  }
+
   await design.save();
   res.json({ success: true, data: design });
 });
 
-// DELETE /api/designs/:designId
+// ─── DELETE ──────────────────────────────────────────────────────
 const deleteDesign = asyncHandler(async (req, res) => {
   const { designId } = req.params;
-  const design = await Design.findOneAndDelete({ _id: designId, userId: req.user._id }); // ✅ fixed
+  const design = await Design.findOneAndDelete({ _id: designId, userId: req.user._id });
   if (!design) throw new ApiError(404, 'Design not found');
   res.json({ success: true, message: 'Design deleted' });
 });

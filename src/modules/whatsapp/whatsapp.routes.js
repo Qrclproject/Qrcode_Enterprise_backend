@@ -47,7 +47,15 @@ router.get('/health', async (req, res) => {
     });
   }
 });
-
+// Add this near other routes
+router.post('/check-numbers', auth, asyncHandler(async (req, res) => {
+  const { phones } = req.body;
+  if (!Array.isArray(phones) || phones.length === 0) {
+    return res.status(400).json({ success: false, message: 'phones array is required' });
+  }
+  const results = await checkNumbers(phones);
+  res.json({ success: true, results });
+}));
 // Test send – protected
 router.post('/test-send', auth, asyncHandler(async (req, res) => {
   const { phone, templateName, variables } = req.body;

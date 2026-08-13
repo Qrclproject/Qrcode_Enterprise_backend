@@ -7,7 +7,7 @@ const { deleteResources } = require('../../utils/cloudinaryCleanup');
 
 // ─── CRUD ────────────────────────────────────────────────────────────
 const create = asyncHandler(async (req, res) => {
-  const campaignData = { ...req.body, userId: req.user.userId };
+  const campaignData = { ...req.body, userId: req.user._id };
   const campaign = await campaignService.createCampaign(campaignData);
   res.status(201).json({ success: true, data: campaign });
 });
@@ -33,6 +33,15 @@ const remove = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   await campaignService.deleteCampaign(campaignId);
   res.json({ success: true, message: 'Campaign deleted' });
+});
+
+// ─── NEW: Upload static header image ───────────────────────────────
+const uploadHeaderImage = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new ApiError(400, 'Image file is required');
+  }
+  const imageUrl = await campaignService.uploadHeaderImage(req.file.buffer);
+  res.json({ success: true, url: imageUrl });
 });
 
 // ─── QR generation ──────────────────────────────────────────────────
@@ -93,12 +102,13 @@ const getById = asyncHandler(async (req, res) => {
 
 // ─── Delete ALL ──────────────────────────────────────────────────────
 const deleteAll = asyncHandler(async (req, res) => {
-  const userId = req.user.userId;
+  const userId = req.user._id;
   const campaigns = await Campaign.find({ userId });
   if (campaigns.length === 0) {
     return res.json({ success: true, message: 'No campaigns to delete' });
   }
 
+  // Collect all QR public IDs
   const allPublicIds = [];
   for (const campaign of campaigns) {
     for (const recipient of campaign.recipients) {
@@ -111,6 +121,7 @@ const deleteAll = asyncHandler(async (req, res) => {
     }
   }
 
+  // Delete from Cloudinary
   if (allPublicIds.length > 0) {
     const batchSize = 100;
     for (let i = 0; i < allPublicIds.length; i += batchSize) {
@@ -119,6 +130,7 @@ const deleteAll = asyncHandler(async (req, res) => {
     }
   }
 
+  // Delete from DB
   await Campaign.deleteMany({ userId });
 
   res.json({
@@ -148,52 +160,38 @@ const getScanHistory = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
-// ─── Background QR processing ────────────────────────────────────
 async function processQRCodes(campaignId) {
-  console.log(`🔄 processQRCodes called for campaign ${campaignId}`);
-  
   const campaign = await Campaign.findById(campaignId).populate('designId');
-  if (!campaign) {
-    console.error(`❌ Campaign ${campaignId} not found`);
-    return;
-  }
-
-  if (campaign.qrGenerationStatus?.status !== 'processing') {
-    console.warn(`⚠️ Campaign ${campaignId} is not in processing state (status: ${campaign.qrGenerationStatus?.status})`);
-    return;
-  }
+  if (!campaign) return;
+  if (campaign.qrGenerationStatus?.status !== 'processing') return;
 
   const design = campaign.designId || null;
-  const recipients = campaign.recipients;
+  const mapping = campaign.mapping || {};
 
-  if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ Campaign ${campaignId} has no recipients`);
-    campaign.qrGenerationStatus.status = 'failed';
-    await campaign.save();
-    return;
+  // Log the design
+  if (design) {
+    console.log(`🎨 Using design: ${design.name}`);
+    console.log(`  qrConfig:`, design.qrConfig);
+    console.log(`  textOverlays:`, design.textOverlays?.length || 0);
+  } else {
+    console.log(`⚠️ No design assigned – generating plain QR codes.`);
   }
 
-  console.log(`📋 Processing ${recipients.length} recipients for campaign ${campaignId}`);
-
+  const recipients = campaign.recipients;
   for (let i = 0; i < recipients.length; i++) {
     const recipient = recipients[i];
     try {
-      console.log(`🔄 Generating QR for recipient ${i+1}/${recipients.length} (${recipient.phone})`);
-      const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design);
+      const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design, mapping);
       recipient.qrUrl = qrUrl;
       campaign.qrGenerationStatus.completed = i + 1;
       await campaign.save();
-      console.log(`✅ QR generated for ${recipient.phone} (${i+1}/${recipients.length})`);
     } catch (err) {
-      console.error(`❌ QR generation failed for ${recipient.phone}:`, err.message);
-      // continue with next recipient
+      console.error(`QR generation failed for ${recipient.phone}:`, err.message);
     }
   }
 
-  // Mark as completed regardless of partial failures
   campaign.qrGenerationStatus.status = 'completed';
   await campaign.save();
-  console.log(`✅ QR generation completed for campaign ${campaignId} (${campaign.qrGenerationStatus.completed}/${campaign.qrGenerationStatus.total})`);
 }
 
 // ─── Exports ──────────────────────────────────────────────────────
@@ -203,6 +201,7 @@ module.exports = {
   getHistory,
   retryFailed,
   remove,
+  uploadHeaderImage,   // 👈 NEW
   generateQRs,
   getQRProgress,
   getById,

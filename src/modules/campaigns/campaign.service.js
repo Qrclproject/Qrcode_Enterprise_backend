@@ -5,6 +5,14 @@ const ApiError = require('../../utils/apiError');
 const { deleteResources } = require('../../utils/cloudinaryCleanup');
 const mongoose = require('mongoose');
 const { decrypt } = require('../../utils/encryption');
+const cloudinary = require('cloudinary').v2;
+const config = require('../../config');
+
+cloudinary.config({
+  cloud_name: config.cloudinary.cloudName,
+  api_key: config.cloudinary.apiKey,
+  api_secret: config.cloudinary.apiSecret,
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
@@ -46,6 +54,21 @@ const createCampaign = async (data) => {
   return campaign;
 };
 
+// ─── Upload static header image to Cloudinary ─────────────────
+const uploadHeaderImage = (buffer) => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'campaign_headers',
+        resource_type: 'image',
+        format: 'png',
+      },
+      (error, result) => (error ? reject(error) : resolve(result.secure_url))
+    );
+    stream.end(buffer);
+  });
+};
+
 // ─── Launch campaign ────────────────────────────────────────────────
 const launchCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
@@ -75,7 +98,13 @@ const launchCampaign = async (campaignId) => {
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
-      if (recipient.qrUrl) {
+      // Use static header image if available, otherwise personalised QR
+      if (campaign.headerImageUrl) {
+        components.push({
+          type: 'header',
+          parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
+        });
+      } else if (recipient.qrUrl) {
         components.push({
           type: 'header',
           parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
@@ -159,7 +188,12 @@ const retryFailedRecipients = async (campaignId) => {
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
-      if (recipient.qrUrl) {
+      if (campaign.headerImageUrl) {
+        components.push({
+          type: 'header',
+          parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
+        });
+      } else if (recipient.qrUrl) {
         components.push({
           type: 'header',
           parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
@@ -213,7 +247,7 @@ const deleteCampaign = async (campaignId) => {
   return { deleted: true, imagesRemoved: publicIds.length };
 };
 
-// ─── ✅ Check‑in recipient (with decryption & logging) ─────────────
+// ─── Check‑in recipient (now populates design and builds QR data fields) ──
 const checkInRecipient = async (campaignId, qrData) => {
   let rawData;
   try {
@@ -222,17 +256,21 @@ const checkInRecipient = async (campaignId, qrData) => {
     throw new ApiError(400, 'Invalid QR code: decryption failed');
   }
 
-  const parts = rawData.split('_');
-  if (parts.length < 2) {
+  const parts = rawData.split('|');
+  const core = parts[0]; // campaignId_phone_timestamp
+  const coreParts = core.split('_');
+  if (coreParts.length < 2) {
     throw new ApiError(400, 'Invalid QR code data');
   }
-  const [campaignIdFromQR, phone] = parts;
+
+  const [campaignIdFromQR, phone] = coreParts;
 
   if (campaignIdFromQR !== campaignId) {
     throw new ApiError(400, 'QR code does not belong to this event');
   }
 
-  const campaign = await Campaign.findById(campaignId);
+  // ✅ Populate designId to access qrDataFields
+  const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) {
     throw new ApiError(404, 'Event not found');
   }
@@ -260,7 +298,20 @@ const checkInRecipient = async (campaignId, qrData) => {
     throw new ApiError(400, 'This QR code has already been used for check‑in');
   }
 
-  // Success
+  // ✅ Build QR data fields (excluding phone) for display
+  let qrDataFields = [];
+  const design = campaign.designId; // populated if designId was set
+  if (design && design.qrDataFields && design.qrDataFields.length > 0) {
+    const extraParts = parts.slice(1); // values after the core (phone)
+    qrDataFields = design.qrDataFields.map((fieldKey, idx) => {
+      const columnName = campaign.mapping?.[fieldKey] || fieldKey;
+      return {
+        label: columnName,
+        value: extraParts[idx] !== undefined ? extraParts[idx] : '',
+      };
+    });
+  }
+
   recipient.checkedIn = true;
   recipient.checkedInAt = new Date();
   campaign.scanHistory.push({
@@ -278,12 +329,13 @@ const checkInRecipient = async (campaignId, qrData) => {
       phone: recipient.phone,
       event: recipient.event || '',
       date: recipient.date || '',
+      qrDataFields, // ✅ include the structured custom fields
       ...recipient._doc,
     },
   };
 };
 
-// ─── ✅ Get scan history for a campaign ────────────────────────────
+// ─── Get scan history ───────────────────────────────────────────────
 const getScanHistory = async (campaignId, filters = {}) => {
   const { search, page = 1, limit = 20 } = filters;
   const campaign = await Campaign.findById(campaignId);
@@ -323,4 +375,5 @@ module.exports = {
   getCampaignById,
   checkInRecipient,
   getScanHistory,
+  uploadHeaderImage,
 };

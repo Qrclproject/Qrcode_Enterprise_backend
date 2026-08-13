@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const ctrl = require('./campaign.controller');
 const validate = require('../../middleware/validate');
 const { createCampaignSchema, launchCampaignSchema, retryFailedSchema } = require('./campaign.validation');
 const auth = require('../../middleware/auth');
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Existing routes
 router.post('/', auth, validate(createCampaignSchema), ctrl.create);
@@ -19,6 +22,9 @@ router.get('/:campaignId/qr-progress', auth, ctrl.getQRProgress);
 
 // Delete ALL
 router.delete('/', auth, ctrl.deleteAll);
+
+// ─── NEW: Upload static header image ─────────────────────────────
+router.post('/upload-header', auth, upload.single('image'), ctrl.uploadHeaderImage);
 
 // ─── Check‑in ────────────────────────────────────────────────────
 router.post('/:campaignId/check-in', auth, ctrl.checkIn);

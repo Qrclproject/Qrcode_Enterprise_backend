@@ -1,7 +1,7 @@
 const QRCode = require('qrcode');
 const cloudinary = require('cloudinary').v2;
 const config = require('../../config');
-const { overlayQROntoDesign } = require('./overlay.service');
+const { overlayDesign } = require('./overlay.service');
 const { encrypt } = require('../../utils/encryption');
 
 cloudinary.config({
@@ -9,13 +9,6 @@ cloudinary.config({
   api_key: config.cloudinary.apiKey,
   api_secret: config.cloudinary.apiSecret,
 });
-
-const generateQRBuffer = (data) =>
-  QRCode.toBuffer(data, {
-    width: 500,
-    margin: 2,
-    color: { dark: '#000000', light: '#ffffff' },
-  });
 
 const uploadToCloudinary = (buffer, publicId) =>
   new Promise((resolve, reject) => {
@@ -32,34 +25,70 @@ const uploadToCloudinary = (buffer, publicId) =>
     stream.end(buffer);
   });
 
-const generateRecipientQR = async (recipient, campaignId, design = null) => {
-  try {
-    console.log(`🔄 Generating QR for recipient ${recipient._id} (${recipient.phone})`);
-    
-    const rawData = `${campaignId}_${recipient.phone}_${Date.now()}`;
-    const encryptedData = encrypt(rawData);
-    const qrBuffer = await generateQRBuffer(encryptedData);
+const generateRecipientQR = async (recipient, campaignId, design = null, mapping = {}) => {
+  // ─── Build core QR data ──────────────────────────────────────
+  let rawData = `${campaignId}_${recipient.phone}_${Date.now()}`;
 
-    let finalBuffer = qrBuffer;
-    if (design) {
-      const paddingFraction = design.qrPadding != null ? design.qrPadding / 100 : 0.15;
-      console.log(`   Using design: ${design.name}, padding: ${paddingFraction}`);
-      finalBuffer = await overlayQROntoDesign(
-        design.imageUrl,
-        design.qrPosition,
-        qrBuffer,
-        paddingFraction
-      );
-    }
-
-    const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;
-    const url = await uploadToCloudinary(finalBuffer, publicId);
-    console.log(`✅ QR generated for ${recipient.phone}: ${url}`);
-    return url;
-  } catch (err) {
-    console.error(`❌ QR generation failed for ${recipient.phone}:`, err.message);
-    throw err; // rethrow so caller can handle
+  // ─── Append custom fields if defined in design ──────────────
+  if (design && design.qrDataFields && design.qrDataFields.length > 0) {
+    const extraParts = design.qrDataFields.map(field => {
+      const columnName = mapping[field]; // field is placeholder like "1"
+      return columnName ? (recipient[columnName] || '') : '';
+    });
+    rawData += '|' + extraParts.join('|');
   }
+
+  const encryptedData = encrypt(rawData);
+
+  // ─── Generate final image ────────────────────────────────────
+  let finalBuffer;
+  if (design) {
+    // Build text overlays with recipient data
+    const textOverlays = (design.textOverlays || []).map(overlay => {
+      const placeholder = overlay.placeholder || '';
+      let text = '';
+      const columnName = mapping[placeholder] || mapping[String(placeholder)];
+      if (columnName && recipient[columnName] !== undefined) {
+        text = recipient[columnName] || '';
+      } else {
+        text = `{{${placeholder}}}`;
+      }
+      return {
+        text,
+        position: overlay.position,
+        style: overlay.style || {},
+      };
+    });
+
+    // ✅ Pass the FULL qrConfig including all shapes and colours
+    const qrConfig = {
+      lightColor: design.qrConfig?.lightColor || '#ffffff',
+      finderOuterColor: design.qrConfig?.finderOuterColor || '#000000',
+      finderOuterShape: design.qrConfig?.finderOuterShape || 'square',
+      finderInnerColor: design.qrConfig?.finderInnerColor || '#000000',
+      finderInnerShape: design.qrConfig?.finderInnerShape || 'square',
+      dataColor: design.qrConfig?.dataColor || '#000000',
+      dataShape: design.qrConfig?.dataShape || 'square',
+    };
+
+    const paddingFraction = design.qrPadding != null ? design.qrPadding / 100 : 0.15;
+
+    finalBuffer = await overlayDesign({
+      templateUrl: design.imageUrl,
+      qrPosition: design.qrPosition,
+      qrData: encryptedData,
+      qrConfig,
+      textOverlays,
+      padding: paddingFraction,
+    });
+  } else {
+    // Fallback: plain QR without design
+    const qrBuffer = await QRCode.toBuffer(encryptedData, { width: 500, margin: 2 });
+    finalBuffer = qrBuffer;
+  }
+
+  const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;
+  return uploadToCloudinary(finalBuffer, publicId);
 };
 
 module.exports = { generateRecipientQR };

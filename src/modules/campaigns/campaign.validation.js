@@ -22,12 +22,13 @@ const createCampaignSchema = z.object({
     scheduleTime: z.string().datetime({ offset: true }).optional(),
     activeVariants: z.array(z.number().int()).optional(),
     variants: z.array(z.string()).optional(),
-    // Dynamic mapping – can contain 'phone', 'qr', and any placeholder keys (1,2,3,...)
     mapping: z.object({
       phone: z.string().optional(),
       qr: z.string().optional(),
     }).catchall(z.string()).optional(),
     designId: z.string().optional(),
+    // 👇 NEW: Static header image URL
+    headerImageUrl: z.string().optional(),
   }),
 });
 
@@ -45,7 +46,6 @@ const retryFailedSchema = z.object({
   }),
 });
 
-// ─── Exports ──────────────────────────────────────────────────────────
 module.exports = {
   createCampaignSchema,
   launchCampaignSchema,

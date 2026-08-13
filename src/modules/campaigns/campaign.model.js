@@ -5,8 +5,8 @@ const scanHistorySchema = new mongoose.Schema({
   name: String,
   timestamp: { type: Date, default: Date.now },
   status: { type: String, enum: ['success', 'failed'] },
-  message: String, // error message if failed
-  scannedBy: { type: String, default: 'system' }, // future: user ID
+  message: String,
+  scannedBy: { type: String, default: 'system' },
 });
 
 const recipientSchema = new mongoose.Schema(
@@ -58,6 +58,8 @@ const campaignSchema = new mongoose.Schema(
     variants: [String],
     mapping: { type: Object, default: {} },
     designId: { type: mongoose.Schema.Types.ObjectId, ref: 'Design' },
+    // 👇 NEW: Static header image URL for all recipients
+    headerImageUrl: { type: String, default: '' },
     qrGenerationStatus: {
       total: Number,
       completed: { type: Number, default: 0 },
@@ -67,7 +69,7 @@ const campaignSchema = new mongoose.Schema(
         default: 'pending',
       },
     },
-    scanHistory: [scanHistorySchema], // 👈 new
+    scanHistory: [scanHistorySchema],
   },
   { timestamps: true }
 );
