@@ -98,18 +98,25 @@ const launchCampaign = async (campaignId) => {
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
-      // Use static header image if available, otherwise personalised QR
-      if (campaign.headerImageUrl) {
-        components.push({
-          type: 'header',
-          parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
-        });
-      } else if (recipient.qrUrl) {
-        components.push({
-          type: 'header',
-          parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
-        });
+
+      // ✅ Add header image ONLY if template supports it AND (static header OR QR generation was enabled)
+      const hasHeaderImage = template.showQR !== false &&
+        (campaign.headerImageUrl || (campaign.designId && recipient.qrUrl));
+
+      if (hasHeaderImage) {
+        if (campaign.headerImageUrl) {
+          components.push({
+            type: 'header',
+            parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
+          });
+        } else if (recipient.qrUrl) {
+          components.push({
+            type: 'header',
+            parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
+          });
+        }
       }
+
       components.push({
         type: 'body',
         parameters: bodyParams,
@@ -188,17 +195,25 @@ const retryFailedRecipients = async (campaignId) => {
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
 
       const components = [];
-      if (campaign.headerImageUrl) {
-        components.push({
-          type: 'header',
-          parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
-        });
-      } else if (recipient.qrUrl) {
-        components.push({
-          type: 'header',
-          parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
-        });
+
+      // ✅ Add header image ONLY if template supports it AND (static header OR QR generation was enabled)
+      const hasHeaderImage = template.showQR !== false &&
+        (campaign.headerImageUrl || (campaign.designId && recipient.qrUrl));
+
+      if (hasHeaderImage) {
+        if (campaign.headerImageUrl) {
+          components.push({
+            type: 'header',
+            parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
+          });
+        } else if (recipient.qrUrl) {
+          components.push({
+            type: 'header',
+            parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
+          });
+        }
       }
+
       components.push({
         type: 'body',
         parameters: bodyParams,
@@ -247,7 +262,7 @@ const deleteCampaign = async (campaignId) => {
   return { deleted: true, imagesRemoved: publicIds.length };
 };
 
-// ─── Check‑in recipient (now populates design and builds QR data fields) ──
+// ─── Check‑in recipient ─────────────────────────────────────────────
 const checkInRecipient = async (campaignId, qrData) => {
   let rawData;
   try {
@@ -257,7 +272,7 @@ const checkInRecipient = async (campaignId, qrData) => {
   }
 
   const parts = rawData.split('|');
-  const core = parts[0]; // campaignId_phone_timestamp
+  const core = parts[0];
   const coreParts = core.split('_');
   if (coreParts.length < 2) {
     throw new ApiError(400, 'Invalid QR code data');
@@ -269,7 +284,6 @@ const checkInRecipient = async (campaignId, qrData) => {
     throw new ApiError(400, 'QR code does not belong to this event');
   }
 
-  // ✅ Populate designId to access qrDataFields
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) {
     throw new ApiError(404, 'Event not found');
@@ -298,11 +312,10 @@ const checkInRecipient = async (campaignId, qrData) => {
     throw new ApiError(400, 'This QR code has already been used for check‑in');
   }
 
-  // ✅ Build QR data fields (excluding phone) for display
   let qrDataFields = [];
-  const design = campaign.designId; // populated if designId was set
+  const design = campaign.designId;
   if (design && design.qrDataFields && design.qrDataFields.length > 0) {
-    const extraParts = parts.slice(1); // values after the core (phone)
+    const extraParts = parts.slice(1);
     qrDataFields = design.qrDataFields.map((fieldKey, idx) => {
       const columnName = campaign.mapping?.[fieldKey] || fieldKey;
       return {
@@ -329,7 +342,7 @@ const checkInRecipient = async (campaignId, qrData) => {
       phone: recipient.phone,
       event: recipient.event || '',
       date: recipient.date || '',
-      qrDataFields, // ✅ include the structured custom fields
+      qrDataFields,
       ...recipient._doc,
     },
   };
