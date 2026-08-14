@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const errorHandler = require('./middleware/errorHandler');
 const { generalLimiter } = require('./middleware/rateLimiter');
-
+const mediaRoutes = require('./modules/media/media.routes');
 // Route imports
 const authRoutes = require('./modules/auth/auth.routes');
 const campaignRoutes = require('./modules/campaigns/campaign.routes');
@@ -47,7 +47,7 @@ app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/designs', designRoutes);
-
+app.use('/api/media', mediaRoutes);
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
