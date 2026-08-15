@@ -35,7 +35,7 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Campaign deleted' });
 });
 
-// ─── Upload static header image (standalone) ───────────────────────
+// ─── Upload static header image ───────────────────────────────────────
 const uploadHeaderImage = asyncHandler(async (req, res) => {
   if (!req.file) {
     throw new ApiError(400, 'Image file is required');
@@ -171,6 +171,36 @@ const getScanHistory = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+// ─── Add recipients to an existing campaign ─────────────────────
+const addRecipients = asyncHandler(async (req, res) => {
+  const { campaignId } = req.params;
+  const { recipients } = req.body; // array of new recipients
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    throw new ApiError(400, 'recipients must be a non-empty array');
+  }
+
+  campaign.recipients.push(...recipients);
+  await campaign.save();
+
+  res.json({ success: true, data: campaign });
+});
+const sendManual = asyncHandler(async (req, res) => {
+  const { campaignId } = req.params;
+  const { phone, variables } = req.body;
+  if (!phone) throw new ApiError(400, 'Phone number is required');
+  const result = await campaignService.sendManualMessage(campaignId, phone, variables || {});
+  res.json({ success: true, data: result });
+});
+// ─── Reset check‑in for a recipient ────────────────────────────
+const resetRecipientCheckIn = asyncHandler(async (req, res) => {
+  const { campaignId, recipientId } = req.params;
+  const result = await campaignService.resetRecipientCheckIn(campaignId, recipientId);
+  res.json({ success: true, data: result });
+});
+
 async function processQRCodes(campaignId) {
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) return;
@@ -219,4 +249,6 @@ module.exports = {
   deleteAll,
   checkIn,
   getScanHistory,
+  addRecipients,
+  resetRecipientCheckIn,sendManual
 };

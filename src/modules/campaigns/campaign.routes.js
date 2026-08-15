@@ -26,12 +26,19 @@ router.delete('/', auth, ctrl.deleteAll);
 // Upload static header image (standalone)
 router.post('/upload-header', auth, upload.single('image'), ctrl.uploadHeaderImage);
 
-// 👇 NEW: Update campaign header image after creation
+// Update campaign header image
 router.put('/:campaignId/header-image', auth, ctrl.updateHeaderImage);
 
 // Check‑in
 router.post('/:campaignId/check-in', auth, ctrl.checkIn);
 
+// Add recipients (if needed)
+router.post('/:campaignId/recipients', auth, ctrl.addRecipients);
+
+// ✅ Reset check‑in for a specific recipient
+router.post('/:campaignId/recipients/:recipientId/reset-checkin', auth, ctrl.resetRecipientCheckIn);
+// Send manual message
+router.post('/:campaignId/send-manual', auth, ctrl.sendManual);
 // Scan history
 router.get('/:campaignId/scan-history', auth, ctrl.getScanHistory);
 

@@ -73,7 +73,6 @@ const uploadHeaderImage = (buffer) => {
 const updateCampaignHeaderImage = async (campaignId, updates) => {
   console.log('🔧 updateCampaignHeaderImage called with:', { campaignId, updates });
 
-  // Defensive: if updates is a string (old behaviour), convert it
   if (typeof updates === 'string') {
     updates = { headerImageUrl: updates };
   }
@@ -128,7 +127,6 @@ const launchCampaign = async (campaignId) => {
 
       const components = [];
 
-      // ✅ Use explicit includeHeaderImage flag
       if (campaign.includeHeaderImage && template.showQR !== false) {
         if (campaign.headerImageUrl) {
           components.push({
@@ -354,7 +352,7 @@ const checkInRecipient = async (campaignId, qrData) => {
     name: recipient.name || recipient.phone,
     status: 'success',
     message: 'Checked in successfully',
-    qrDataFields,   // ✅ store QR Data Content in scan history
+    qrDataFields,
   });
   await campaign.save();
 
@@ -371,7 +369,52 @@ const checkInRecipient = async (campaignId, qrData) => {
   };
 };
 
-// ─── Get scan history ───────────────────────────────────────────────
+// ─── Reset check‑in status for a recipient ─────────────────────
+const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  // Try to find by subdocument _id first
+  let recipient = campaign.recipients.id(recipientIdentifier);
+
+  // If not found, search by phone
+  if (!recipient) {
+    recipient = campaign.recipients.find(r => r.phone === recipientIdentifier);
+  }
+
+  if (!recipient) {
+    throw new ApiError(404, 'Recipient not found');
+  }
+
+  if (!recipient.checkedIn) {
+    throw new ApiError(400, 'Recipient is not checked in');
+  }
+
+  // Reset the check‑in status and clear timestamp
+  recipient.checkedIn = false;
+  recipient.checkedInAt = null;
+
+  // Add a scan history entry for audit
+  campaign.scanHistory.push({
+    phone: recipient.phone,
+    name: recipient.name || recipient.phone,
+    status: 'success',
+    message: 'Check‑in reset by admin/staff',
+    timestamp: new Date(),
+  });
+
+  await campaign.save();
+
+  return {
+    campaign: campaign.name,
+    recipient: {
+      phone: recipient.phone,
+      name: recipient.name || recipient.phone,
+      checkedIn: recipient.checkedIn,
+    },
+  };
+};
+
 // ─── Get scan history ───────────────────────────────────────────────
 const getScanHistory = async (campaignId, filters = {}) => {
   const { search, page = 1, limit = 20 } = filters;
@@ -383,11 +426,9 @@ const getScanHistory = async (campaignId, filters = {}) => {
   if (search) {
     const s = search.toLowerCase();
     history = history.filter(h => {
-      // Check name and phone (old scans)
       if ((h.name && h.name.toLowerCase().includes(s)) || (h.phone && h.phone.toLowerCase().includes(s))) {
         return true;
       }
-      // Check QR Data Content fields (new scans)
       if (h.qrDataFields && h.qrDataFields.length > 0) {
         return h.qrDataFields.some(field =>
           (field.label && field.label.toLowerCase().includes(s)) ||
@@ -411,6 +452,61 @@ const getScanHistory = async (campaignId, filters = {}) => {
     totalPages: Math.ceil(total / limit),
   };
 };
+
+// ─── Send a manual message to a specific phone number ───────────
+const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  const template = await Template.findById(campaign.templateId);
+  if (!template) throw new ApiError(404, 'Template not found');
+  const templateName = template.whatsappTemplateName || 'event_qr_delivery';
+
+  const activeIndices = campaign.activeVariants || [0];
+  const variantIndex = activeIndices[0];
+  const variant = template.variants[variantIndex];
+  if (!variant) throw new ApiError(400, 'No active variant found');
+
+  const placeholders = extractPlaceholders(variant.body);
+
+  // Build a pseudo-recipient object for mapping
+  const recipientData = { ...customVariables };
+  // If the phone exists in campaign, merge with their data
+  const existingRecipient = campaign.recipients.find(r => r.phone === phone);
+  if (existingRecipient) {
+    Object.assign(recipientData, existingRecipient.toObject());
+  }
+
+  const bodyParams = buildBodyParameters(recipientData, placeholders, campaign.mapping);
+
+  const components = [];
+
+  // Header image (static or QR)
+  if (campaign.includeHeaderImage && template.showQR !== false) {
+    if (campaign.headerImageUrl) {
+      components.push({
+        type: 'header',
+        parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
+      });
+    } else if (existingRecipient?.qrUrl) {
+      components.push({
+        type: 'header',
+        parameters: [{ type: 'image', image: { link: existingRecipient.qrUrl } }],
+      });
+    }
+  }
+
+  components.push({
+    type: 'body',
+    parameters: bodyParams,
+  });
+
+  await sendTemplateMessage(phone, templateName, components, campaign.userId);
+
+  return { success: true, phone, templateName };
+};
+
+
 // ─── Exports ─────────────────────────────────────────────────────────
 module.exports = {
   createCampaign,
@@ -423,4 +519,5 @@ module.exports = {
   getScanHistory,
   uploadHeaderImage,
   updateCampaignHeaderImage,
+  resetRecipientCheckIn,sendManualMessage,
 };

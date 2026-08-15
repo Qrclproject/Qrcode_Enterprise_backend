@@ -5,7 +5,7 @@ const { renderStyledQR } = require('../../utils/styledQr');
 // ─── Download helper ──────────────────────────────────────────────
 const downloadImage = async (url) => {
   const response = await axios.get(url, {
-    responseType: 'arraybuffer',
+    responseType: 'arraybuffer', 
     timeout: 120000,   // 👈 increased
   });
   return Buffer.from(response.data);
