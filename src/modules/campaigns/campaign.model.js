@@ -7,7 +7,6 @@ const scanHistorySchema = new mongoose.Schema({
   status: { type: String, enum: ['success', 'failed'] },
   message: String,
   scannedBy: { type: String, default: 'system' },
-  // 👇 NEW: store structured QR Data Content fields
   qrDataFields: [
     {
       label: String,
@@ -77,6 +76,21 @@ const campaignSchema = new mongoose.Schema(
       },
     },
     scanHistory: [scanHistorySchema],
+    // 👇 NEW: progress for adding new recipients
+    addRecipientsStatus: {
+      total: Number,
+      completed: { type: Number, default: 0 },
+      status: {
+        type: String,
+        enum: ['pending', 'processing', 'completed', 'failed'],
+        default: 'pending',
+      },
+      phase: {
+        type: String,
+        enum: ['none', 'qr', 'sending'],
+        default: 'none',
+      },
+    },
   },
   { timestamps: true }
 );

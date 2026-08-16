@@ -171,22 +171,40 @@ const getScanHistory = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
-// ─── Add recipients to an existing campaign ─────────────────────
+// ─── Add recipients to existing campaign ─────────────────────
 const addRecipients = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
-  const { recipients } = req.body; // array of new recipients
-  const campaign = await Campaign.findById(campaignId);
-  if (!campaign) throw new ApiError(404, 'Campaign not found');
+  const { recipients, generateQr, sendNow } = req.body;
 
   if (!Array.isArray(recipients) || recipients.length === 0) {
     throw new ApiError(400, 'recipients must be a non-empty array');
   }
 
-  campaign.recipients.push(...recipients);
-  await campaign.save();
+  const campaign = await campaignService.addRecipientsToCampaign(campaignId, recipients, {
+    generateQr: generateQr === true,
+    sendNow: sendNow === true,
+  });
 
   res.json({ success: true, data: campaign });
 });
+
+// ─── Get progress of add-recipients process ──────────────────
+const getAddRecipientsProgress = asyncHandler(async (req, res) => {
+  const { campaignId } = req.params;
+  const campaign = await Campaign.findById(campaignId).select('addRecipientsStatus');
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  const { total, completed, status, phase } = campaign.addRecipientsStatus || {};
+  res.json({
+    success: true,
+    total: total || 0,
+    completed: completed || 0,
+    status: status || 'pending',
+    phase: phase || 'none',
+  });
+});
+
+// ─── Send manual message to a specific number ─────────────────
 const sendManual = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { phone, variables } = req.body;
@@ -194,6 +212,7 @@ const sendManual = asyncHandler(async (req, res) => {
   const result = await campaignService.sendManualMessage(campaignId, phone, variables || {});
   res.json({ success: true, data: result });
 });
+
 // ─── Reset check‑in for a recipient ────────────────────────────
 const resetRecipientCheckIn = asyncHandler(async (req, res) => {
   const { campaignId, recipientId } = req.params;
@@ -250,5 +269,7 @@ module.exports = {
   checkIn,
   getScanHistory,
   addRecipients,
-  resetRecipientCheckIn,sendManual
+  resetRecipientCheckIn,
+  sendManual,
+  getAddRecipientsProgress,   // 👈 new
 };

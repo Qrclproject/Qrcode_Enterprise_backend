@@ -35,10 +35,15 @@ router.post('/:campaignId/check-in', auth, ctrl.checkIn);
 // Add recipients (if needed)
 router.post('/:campaignId/recipients', auth, ctrl.addRecipients);
 
+// ✅ Get progress of add-recipients process
+router.get('/:campaignId/add-recipients-progress', auth, ctrl.getAddRecipientsProgress);
+
 // ✅ Reset check‑in for a specific recipient
 router.post('/:campaignId/recipients/:recipientId/reset-checkin', auth, ctrl.resetRecipientCheckIn);
+
 // Send manual message
 router.post('/:campaignId/send-manual', auth, ctrl.sendManual);
+
 // Scan history
 router.get('/:campaignId/scan-history', auth, ctrl.getScanHistory);
 

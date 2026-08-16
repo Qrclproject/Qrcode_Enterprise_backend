@@ -1,5 +1,7 @@
 const Campaign = require('./campaign.model');
 const Template = require('../templates/template.model');
+const Design = require('../designs/design.model');
+const qrService = require('./qr.service');   // 👈 import qr service
 const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
 const { deleteResources } = require('../../utils/cloudinaryCleanup');
@@ -46,6 +48,19 @@ const validateTemplateId = (templateId) => {
     throw new ApiError(400, 'Invalid template ID format.');
   }
   return true;
+};
+
+// ✅ Normalize phone number to international format
+const normalizePhone = (phone) => {
+  if (!phone) return '';
+  let cleaned = String(phone).replace(/[^\d]/g, '');
+  if (cleaned.startsWith('0')) {
+    cleaned = '234' + cleaned.slice(1);
+  }
+  if (!cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned;
+  }
+  return cleaned;
 };
 
 // ─── Create campaign ─────────────────────────────────────────────────
@@ -374,10 +389,7 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
-  // Try to find by subdocument _id first
   let recipient = campaign.recipients.id(recipientIdentifier);
-
-  // If not found, search by phone
   if (!recipient) {
     recipient = campaign.recipients.find(r => r.phone === recipientIdentifier);
   }
@@ -390,11 +402,9 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
     throw new ApiError(400, 'Recipient is not checked in');
   }
 
-  // Reset the check‑in status and clear timestamp
   recipient.checkedIn = false;
   recipient.checkedInAt = null;
 
-  // Add a scan history entry for audit
   campaign.scanHistory.push({
     phone: recipient.phone,
     name: recipient.name || recipient.phone,
@@ -469,9 +479,7 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
 
   const placeholders = extractPlaceholders(variant.body);
 
-  // Build a pseudo-recipient object for mapping
   const recipientData = { ...customVariables };
-  // If the phone exists in campaign, merge with their data
   const existingRecipient = campaign.recipients.find(r => r.phone === phone);
   if (existingRecipient) {
     Object.assign(recipientData, existingRecipient.toObject());
@@ -481,7 +489,6 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
 
   const components = [];
 
-  // Header image (static or QR)
   if (campaign.includeHeaderImage && template.showQR !== false) {
     if (campaign.headerImageUrl) {
       components.push({
@@ -506,6 +513,152 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   return { success: true, phone, templateName };
 };
 
+// ─── Background processing of newly added recipients ───────────────
+const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) return;
+
+  const design = campaign.designId ? await Design.findById(campaign.designId) : null;
+  const mapping = campaign.mapping || {};
+
+  // Phase 1: QR generation (if requested)
+  if (generateQr && design) {
+    campaign.addRecipientsStatus.phase = 'qr';
+    campaign.addRecipientsStatus.total = recipientIds.length;
+    campaign.addRecipientsStatus.completed = 0;
+    campaign.addRecipientsStatus.status = 'processing';
+    await campaign.save();
+
+    for (const id of recipientIds) {
+      const recipient = campaign.recipients.id(id);
+      if (!recipient) continue;
+      try {
+        const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design, mapping);
+        recipient.qrUrl = qrUrl;
+      } catch (err) {
+        console.error(`QR generation failed for ${recipient.phone}:`, err.message);
+      }
+      campaign.addRecipientsStatus.completed += 1;
+      await campaign.save();
+    }
+  }
+
+  // Phase 2: Sending (if requested)
+  if (sendNow) {
+    campaign.addRecipientsStatus.phase = 'sending';
+    campaign.addRecipientsStatus.total = recipientIds.length;
+    campaign.addRecipientsStatus.completed = 0;
+    campaign.addRecipientsStatus.status = 'processing';
+    await campaign.save();
+
+    await sendCampaignToRecipients(campaignId, recipientIds);
+  }
+
+  // Final status
+  campaign.addRecipientsStatus.status = 'completed';
+  campaign.addRecipientsStatus.phase = 'none';
+  await campaign.save();
+};
+
+// ─── Add recipients to existing campaign (async) ───────────────────
+const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  // Normalize phone numbers
+  const normalizedRecipients = newRecipients.map(r => ({
+    ...r,
+    phone: normalizePhone(r.phone || ''),
+    status: 'pending',
+    checkedIn: false,
+    checkedInAt: null,
+  }));
+
+  // Add to campaign
+  campaign.recipients.push(...normalizedRecipients);
+  await campaign.save();
+
+  // Get IDs of newly added recipients
+  const addedRecipients = campaign.recipients.filter(r =>
+    normalizedRecipients.some(nr => nr.phone === r.phone) && r.status === 'pending'
+  );
+  const recipientIds = addedRecipients.map(r => r._id);
+
+  // Initialize progress and start background job
+  campaign.addRecipientsStatus = {
+    total: recipientIds.length,
+    completed: 0,
+    status: 'processing',
+    phase: generateQr ? 'qr' : (sendNow ? 'sending' : 'none'),
+  };
+  await campaign.save();
+
+  // Start background processing (do not await)
+  processNewRecipients(campaignId, recipientIds, { generateQr, sendNow }).catch(err => {
+    console.error('❌ Background add-recipients processing failed:', err.message);
+  });
+
+  return campaign;
+};
+
+// ─── Send template messages to specific recipients ────────────────
+const sendCampaignToRecipients = async (campaignId, recipientIds) => {
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  const template = await Template.findById(campaign.templateId);
+  if (!template) throw new ApiError(404, 'Template not found');
+
+  const activeIndices = campaign.activeVariants || [0];
+
+  for (const id of recipientIds) {
+    const recipient = campaign.recipients.id(id);
+    if (!recipient) continue;
+
+    try {
+      const variantIndex = activeIndices[0];
+      const variant = template.variants[variantIndex];
+      if (!variant) throw new Error('Variant not found');
+
+      const placeholders = extractPlaceholders(variant.body);
+      const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
+
+      const components = [];
+
+      if (campaign.includeHeaderImage && template.showQR !== false) {
+        if (campaign.headerImageUrl) {
+          components.push({
+            type: 'header',
+            parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
+          });
+        } else if (recipient.qrUrl) {
+          components.push({
+            type: 'header',
+            parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
+          });
+        }
+      }
+
+      components.push({
+        type: 'body',
+        parameters: bodyParams,
+      });
+
+      await sendTemplateMessage(recipient.phone, template.whatsappTemplateName || 'event_qr_delivery', components, campaign.userId);
+
+      recipient.status = 'sent';
+      campaign.delivered += 1;
+    } catch (err) {
+      recipient.status = 'failed';
+      recipient.failureReason = err.message || 'Unknown error';
+      campaign.failed += 1;
+    }
+  }
+
+  campaign.status = 'completed';
+  await campaign.save();
+  return campaign;
+};
 
 // ─── Exports ─────────────────────────────────────────────────────────
 module.exports = {
@@ -519,5 +672,8 @@ module.exports = {
   getScanHistory,
   uploadHeaderImage,
   updateCampaignHeaderImage,
-  resetRecipientCheckIn,sendManualMessage,
+  resetRecipientCheckIn,
+  sendManualMessage,
+  addRecipientsToCampaign,
+  sendCampaignToRecipients,
 };
