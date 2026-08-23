@@ -548,85 +548,7 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   return { success: true, phone, templateName };
 };
 
-// ─── Background processing of newly added recipients (IMPROVED) ────
-const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
-  // We use atomic updates to avoid version conflicts.
-  // Phase 1: QR generation (if requested)
-  if (generateQr) {
-    // Update status atomically
-    await Campaign.findOneAndUpdate(
-      { _id: campaignId },
-      {
-        $set: {
-          'addRecipientsStatus.phase': 'qr',
-          'addRecipientsStatus.total': recipientIds.length,
-          'addRecipientsStatus.completed': 0,
-          'addRecipientsStatus.status': 'processing',
-        },
-      }
-    );
 
-    const design = await Design.findById(campaignId); // not campaign.designId because we need the design
-    // Actually we need design from campaign, so fetch campaign read-only
-    const campaign = await Campaign.findById(campaignId).select('designId mapping');
-    const design = campaign.designId ? await Design.findById(campaign.designId) : null;
-    const mapping = campaign.mapping || {};
-
-    for (const id of recipientIds) {
-      // Fetch the recipient separately to get its data for QR generation
-      const recipientDoc = await Campaign.findOne(
-        { _id: campaignId, 'recipients._id': id },
-        { 'recipients.$': 1 }
-      );
-      if (!recipientDoc || !recipientDoc.recipients || recipientDoc.recipients.length === 0) continue;
-      const recipient = recipientDoc.recipients[0];
-
-      try {
-        const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design, mapping);
-        // Atomically update the recipient's qrUrl
-        await Campaign.findOneAndUpdate(
-          { _id: campaignId, 'recipients._id': id },
-          { $set: { 'recipients.$.qrUrl': qrUrl } }
-        );
-      } catch (err) {
-        console.error(`QR generation failed for ${recipient.phone}:`, err.message);
-      }
-      // Increment completed count atomically
-      await Campaign.findOneAndUpdate(
-        { _id: campaignId },
-        { $inc: { 'addRecipientsStatus.completed': 1 } }
-      );
-    }
-  }
-
-  // Phase 2: Sending (if requested)
-  if (sendNow) {
-    await Campaign.findOneAndUpdate(
-      { _id: campaignId },
-      {
-        $set: {
-          'addRecipientsStatus.phase': 'sending',
-          'addRecipientsStatus.total': recipientIds.length,
-          'addRecipientsStatus.completed': 0,
-          'addRecipientsStatus.status': 'processing',
-        },
-      }
-    );
-
-    await sendCampaignToRecipients(campaignId, recipientIds);
-  }
-
-  // Final status – atomic
-  await Campaign.findOneAndUpdate(
-    { _id: campaignId },
-    {
-      $set: {
-        'addRecipientsStatus.status': 'completed',
-        'addRecipientsStatus.phase': 'none',
-      },
-    }
-  );
-};
 
 // ─── Add recipients to existing campaign (ATOMIC) ──────────────────
 const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
@@ -668,10 +590,81 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
   const recipientIds = added.map(r => r._id);
 
   // Start background processing (do not await)
-  processNewRecipients(campaignId, recipientIds, { generateQr, sendNow }).catch(err => {
-    console.error('❌ Background add-recipients processing failed:', err.message);
-  });
+const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
+  // Phase 1: QR generation (if requested)
+  if (generateQr) {
+    // Update status atomically
+    await Campaign.findOneAndUpdate(
+      { _id: campaignId },
+      {
+        $set: {
+          'addRecipientsStatus.phase': 'qr',
+          'addRecipientsStatus.total': recipientIds.length,
+          'addRecipientsStatus.completed': 0,
+          'addRecipientsStatus.status': 'processing',
+        },
+      }
+    );
 
+    // Fetch campaign to get designId and mapping (read‑only)
+    const campaign = await Campaign.findById(campaignId).select('designId mapping');
+    const design = campaign.designId ? await Design.findById(campaign.designId) : null;
+    const mapping = campaign.mapping || {};
+
+    for (const id of recipientIds) {
+      // Fetch the recipient separately to get its data for QR generation
+      const recipientDoc = await Campaign.findOne(
+        { _id: campaignId, 'recipients._id': id },
+        { 'recipients.$': 1 }
+      );
+      if (!recipientDoc || !recipientDoc.recipients || recipientDoc.recipients.length === 0) continue;
+      const recipient = recipientDoc.recipients[0];
+
+      try {
+        const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design, mapping);
+        // Atomically update the recipient's qrUrl
+        await Campaign.findOneAndUpdate(
+          { _id: campaignId, 'recipients._id': id },
+          { $set: { 'recipients.$.qrUrl': qrUrl } }
+        );
+      } catch (err) {
+        console.error(`QR generation failed for ${recipient.phone}:`, err.message);
+      }
+      // Increment completed count atomically
+      await Campaign.findOneAndUpdate(
+        { _id: campaignId },
+        { $inc: { 'addRecipientsStatus.completed': 1 } }
+      );
+    }
+  }
+
+  // Phase 2: Sending (if requested) – unchanged
+  if (sendNow) {
+    await Campaign.findOneAndUpdate(
+      { _id: campaignId },
+      {
+        $set: {
+          'addRecipientsStatus.phase': 'sending',
+          'addRecipientsStatus.total': recipientIds.length,
+          'addRecipientsStatus.completed': 0,
+          'addRecipientsStatus.status': 'processing',
+        },
+      }
+    );
+    await sendCampaignToRecipients(campaignId, recipientIds);
+  }
+
+  // Final status – atomic
+  await Campaign.findOneAndUpdate(
+    { _id: campaignId },
+    {
+      $set: {
+        'addRecipientsStatus.status': 'completed',
+        'addRecipientsStatus.phase': 'none',
+      },
+    }
+  );
+};
   return updatedCampaign;
 };
 
