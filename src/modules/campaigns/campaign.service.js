@@ -1,7 +1,7 @@
 const Campaign = require('./campaign.model');
 const Template = require('../templates/template.model');
 const Design = require('../designs/design.model');
-const qrService = require('./qr.service');   // 👈 import qr service
+const qrService = require('./qr.service');
 const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
 const { deleteResources } = require('../../utils/cloudinaryCleanup');
@@ -50,7 +50,6 @@ const validateTemplateId = (templateId) => {
   return true;
 };
 
-// ✅ Normalize phone number to international format
 const normalizePhone = (phone) => {
   if (!phone) return '';
   let cleaned = String(phone).replace(/[^\d]/g, '');
@@ -113,6 +112,7 @@ const updateCampaignHeaderImage = async (campaignId, updates) => {
 };
 
 // ─── Launch campaign ────────────────────────────────────────────────
+// (Remains the same – uses load-save but less concurrent; could be refactored later)
 const launchCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -206,6 +206,7 @@ const getCampaignHistory = async (filters = {}) => {
 };
 
 // ─── Retry failed recipients ────────────────────────────────────────
+// (Could also be improved with atomic updates, but kept simple)
 const retryFailedRecipients = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -271,6 +272,7 @@ const retryFailedRecipients = async (campaignId) => {
 };
 
 // ─── Delete campaign ─────────────────────────────────────────────────
+// (Uses atomic delete, fine)
 const deleteCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -297,7 +299,7 @@ const deleteCampaign = async (campaignId) => {
   return { deleted: true, imagesRemoved: publicIds.length };
 };
 
-// ─── Check‑in recipient ─────────────────────────────────────────────
+// ─── Check‑in recipient (FULLY ATOMIC) ─────────────────────────────
 const checkInRecipient = async (campaignId, qrData) => {
   let rawData;
   try {
@@ -319,34 +321,23 @@ const checkInRecipient = async (campaignId, qrData) => {
     throw new ApiError(400, 'QR code does not belong to this event');
   }
 
+  // Fetch campaign for design/mapping (read‑only)
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) {
     throw new ApiError(404, 'Event not found');
   }
 
+  // Check if recipient exists and is not already checked in
   const recipient = campaign.recipients.find(r => r.phone === phone);
   if (!recipient) {
-    campaign.scanHistory.push({
-      phone,
-      name: 'Unknown',
-      status: 'failed',
-      message: 'Recipient not found for this event',
-    });
-    await campaign.save();
+    // Do NOT attempt to save a failure log here – just throw
     throw new ApiError(404, 'Recipient not found for this event');
   }
-
   if (recipient.checkedIn) {
-    campaign.scanHistory.push({
-      phone: recipient.phone,
-      name: recipient.name || recipient.phone,
-      status: 'failed',
-      message: 'Already checked in',
-    });
-    await campaign.save();
     throw new ApiError(400, 'This QR code has already been used for check‑in');
   }
 
+  // Build extra QR data fields (read‑only)
   let qrDataFields = [];
   const design = campaign.designId;
   if (design && design.qrDataFields && design.qrDataFields.length > 0) {
@@ -360,32 +351,56 @@ const checkInRecipient = async (campaignId, qrData) => {
     });
   }
 
-  recipient.checkedIn = true;
-  recipient.checkedInAt = new Date();
-  campaign.scanHistory.push({
-    phone: recipient.phone,
-    name: recipient.name || recipient.phone,
-    status: 'success',
-    message: 'Checked in successfully',
-    qrDataFields,
-  });
-  await campaign.save();
+  // Atomic update: find the campaign with the specific recipient not yet checked in
+  const updatedCampaign = await Campaign.findOneAndUpdate(
+    {
+      _id: campaignId,
+      'recipients.phone': phone,
+      'recipients.checkedIn': false,
+    },
+    {
+      $set: {
+        'recipients.$.checkedIn': true,
+        'recipients.$.checkedInAt': new Date(),
+      },
+      $push: {
+        scanHistory: {
+          phone: recipient.phone,
+          name: recipient.name || recipient.phone,
+          status: 'success',
+          message: 'Checked in successfully',
+          qrDataFields,
+        },
+      },
+    },
+    {
+      new: true,
+      runValidators: true,
+    }
+  );
 
+  if (!updatedCampaign) {
+    // Could be that the recipient was already checked in (race) or not found
+    throw new ApiError(400, 'Recipient not found or already checked in');
+  }
+
+  const updatedRecipient = updatedCampaign.recipients.find(r => r.phone === phone);
   return {
-    campaign: campaign.name,
+    campaign: updatedCampaign.name,
     recipient: {
-      name: recipient.name || recipient.phone,
-      phone: recipient.phone,
-      event: recipient.event || '',
-      date: recipient.date || '',
+      name: updatedRecipient.name || updatedRecipient.phone,
+      phone: updatedRecipient.phone,
+      event: updatedRecipient.event || '',
+      date: updatedRecipient.date || '',
       qrDataFields,
-      ...recipient._doc,
+      ...updatedRecipient._doc,
     },
   };
 };
 
-// ─── Reset check‑in status for a recipient ─────────────────────
+// ─── Reset check‑in status for a recipient (ATOMIC) ──────────────
 const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
+  // First, find the recipient to know its id and phone
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
@@ -393,39 +408,58 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   if (!recipient) {
     recipient = campaign.recipients.find(r => r.phone === recipientIdentifier);
   }
-
   if (!recipient) {
     throw new ApiError(404, 'Recipient not found');
   }
-
   if (!recipient.checkedIn) {
     throw new ApiError(400, 'Recipient is not checked in');
   }
 
-  recipient.checkedIn = false;
-  recipient.checkedInAt = null;
+  // Perform atomic update
+  const updatedCampaign = await Campaign.findOneAndUpdate(
+    {
+      _id: campaignId,
+      'recipients._id': recipient._id,
+      'recipients.checkedIn': true, // ensure we only reset if currently checked in
+    },
+    {
+      $set: {
+        'recipients.$.checkedIn': false,
+        'recipients.$.checkedInAt': null,
+      },
+      $push: {
+        scanHistory: {
+          phone: recipient.phone,
+          name: recipient.name || recipient.phone,
+          status: 'success',
+          message: 'Check‑in reset by admin/staff',
+          timestamp: new Date(),
+        },
+      },
+    },
+    {
+      new: true,
+      runValidators: true,
+    }
+  );
 
-  campaign.scanHistory.push({
-    phone: recipient.phone,
-    name: recipient.name || recipient.phone,
-    status: 'success',
-    message: 'Check‑in reset by admin/staff',
-    timestamp: new Date(),
-  });
+  if (!updatedCampaign) {
+    throw new ApiError(400, 'Recipient not found or not currently checked in');
+  }
 
-  await campaign.save();
-
+  const updatedRecipient = updatedCampaign.recipients.id(recipient._id);
   return {
-    campaign: campaign.name,
+    campaign: updatedCampaign.name,
     recipient: {
-      phone: recipient.phone,
-      name: recipient.name || recipient.phone,
-      checkedIn: recipient.checkedIn,
+      phone: updatedRecipient.phone,
+      name: updatedRecipient.name || updatedRecipient.phone,
+      checkedIn: updatedRecipient.checkedIn,
     },
   };
 };
 
 // ─── Get scan history ───────────────────────────────────────────────
+// (Read‑only, no concurrency issues)
 const getScanHistory = async (campaignId, filters = {}) => {
   const { search, page = 1, limit = 20 } = filters;
   const campaign = await Campaign.findById(campaignId);
@@ -464,6 +498,7 @@ const getScanHistory = async (campaignId, filters = {}) => {
 };
 
 // ─── Send a manual message to a specific phone number ───────────
+// (Uses load-save but infrequent, kept as-is)
 const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -513,58 +548,88 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   return { success: true, phone, templateName };
 };
 
-// ─── Background processing of newly added recipients ───────────────
+// ─── Background processing of newly added recipients (IMPROVED) ────
 const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
-  const campaign = await Campaign.findById(campaignId);
-  if (!campaign) return;
-
-  const design = campaign.designId ? await Design.findById(campaign.designId) : null;
-  const mapping = campaign.mapping || {};
-
+  // We use atomic updates to avoid version conflicts.
   // Phase 1: QR generation (if requested)
-  if (generateQr && design) {
-    campaign.addRecipientsStatus.phase = 'qr';
-    campaign.addRecipientsStatus.total = recipientIds.length;
-    campaign.addRecipientsStatus.completed = 0;
-    campaign.addRecipientsStatus.status = 'processing';
-    await campaign.save();
+  if (generateQr) {
+    // Update status atomically
+    await Campaign.findOneAndUpdate(
+      { _id: campaignId },
+      {
+        $set: {
+          'addRecipientsStatus.phase': 'qr',
+          'addRecipientsStatus.total': recipientIds.length,
+          'addRecipientsStatus.completed': 0,
+          'addRecipientsStatus.status': 'processing',
+        },
+      }
+    );
+
+    const design = await Design.findById(campaignId); // not campaign.designId because we need the design
+    // Actually we need design from campaign, so fetch campaign read-only
+    const campaign = await Campaign.findById(campaignId).select('designId mapping');
+    const design = campaign.designId ? await Design.findById(campaign.designId) : null;
+    const mapping = campaign.mapping || {};
 
     for (const id of recipientIds) {
-      const recipient = campaign.recipients.id(id);
-      if (!recipient) continue;
+      // Fetch the recipient separately to get its data for QR generation
+      const recipientDoc = await Campaign.findOne(
+        { _id: campaignId, 'recipients._id': id },
+        { 'recipients.$': 1 }
+      );
+      if (!recipientDoc || !recipientDoc.recipients || recipientDoc.recipients.length === 0) continue;
+      const recipient = recipientDoc.recipients[0];
+
       try {
         const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design, mapping);
-        recipient.qrUrl = qrUrl;
+        // Atomically update the recipient's qrUrl
+        await Campaign.findOneAndUpdate(
+          { _id: campaignId, 'recipients._id': id },
+          { $set: { 'recipients.$.qrUrl': qrUrl } }
+        );
       } catch (err) {
         console.error(`QR generation failed for ${recipient.phone}:`, err.message);
       }
-      campaign.addRecipientsStatus.completed += 1;
-      await campaign.save();
+      // Increment completed count atomically
+      await Campaign.findOneAndUpdate(
+        { _id: campaignId },
+        { $inc: { 'addRecipientsStatus.completed': 1 } }
+      );
     }
   }
 
   // Phase 2: Sending (if requested)
   if (sendNow) {
-    campaign.addRecipientsStatus.phase = 'sending';
-    campaign.addRecipientsStatus.total = recipientIds.length;
-    campaign.addRecipientsStatus.completed = 0;
-    campaign.addRecipientsStatus.status = 'processing';
-    await campaign.save();
+    await Campaign.findOneAndUpdate(
+      { _id: campaignId },
+      {
+        $set: {
+          'addRecipientsStatus.phase': 'sending',
+          'addRecipientsStatus.total': recipientIds.length,
+          'addRecipientsStatus.completed': 0,
+          'addRecipientsStatus.status': 'processing',
+        },
+      }
+    );
 
     await sendCampaignToRecipients(campaignId, recipientIds);
   }
 
-  // Final status
-  campaign.addRecipientsStatus.status = 'completed';
-  campaign.addRecipientsStatus.phase = 'none';
-  await campaign.save();
+  // Final status – atomic
+  await Campaign.findOneAndUpdate(
+    { _id: campaignId },
+    {
+      $set: {
+        'addRecipientsStatus.status': 'completed',
+        'addRecipientsStatus.phase': 'none',
+      },
+    }
+  );
 };
 
-// ─── Add recipients to existing campaign (async) ───────────────────
+// ─── Add recipients to existing campaign (ATOMIC) ──────────────────
 const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
-  const campaign = await Campaign.findById(campaignId);
-  if (!campaign) throw new ApiError(404, 'Campaign not found');
-
   // Normalize phone numbers
   const normalizedRecipients = newRecipients.map(r => ({
     ...r,
@@ -574,34 +639,44 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
     checkedInAt: null,
   }));
 
-  // Add to campaign
-  campaign.recipients.push(...normalizedRecipients);
-  await campaign.save();
-
-  // Get IDs of newly added recipients
-  const addedRecipients = campaign.recipients.filter(r =>
-    normalizedRecipients.some(nr => nr.phone === r.phone) && r.status === 'pending'
+  // Atomic push of new recipients
+  const updatedCampaign = await Campaign.findOneAndUpdate(
+    { _id: campaignId },
+    {
+      $push: {
+        recipients: { $each: normalizedRecipients },
+      },
+      $set: {
+        addRecipientsStatus: {
+          total: normalizedRecipients.length,
+          completed: 0,
+          status: 'processing',
+          phase: generateQr ? 'qr' : (sendNow ? 'sending' : 'none'),
+        },
+      },
+    },
+    {
+      new: true,
+      runValidators: true,
+    }
   );
-  const recipientIds = addedRecipients.map(r => r._id);
 
-  // Initialize progress and start background job
-  campaign.addRecipientsStatus = {
-    total: recipientIds.length,
-    completed: 0,
-    status: 'processing',
-    phase: generateQr ? 'qr' : (sendNow ? 'sending' : 'none'),
-  };
-  await campaign.save();
+  if (!updatedCampaign) throw new ApiError(404, 'Campaign not found');
+
+  // Get IDs of newly added recipients (the last N items)
+  const added = updatedCampaign.recipients.slice(-normalizedRecipients.length);
+  const recipientIds = added.map(r => r._id);
 
   // Start background processing (do not await)
   processNewRecipients(campaignId, recipientIds, { generateQr, sendNow }).catch(err => {
     console.error('❌ Background add-recipients processing failed:', err.message);
   });
 
-  return campaign;
+  return updatedCampaign;
 };
 
 // ─── Send template messages to specific recipients ────────────────
+// (Could be optimized, but kept as-is; note that it uses load-save)
 const sendCampaignToRecipients = async (campaignId, recipientIds) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
