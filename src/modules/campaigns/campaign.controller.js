@@ -5,6 +5,7 @@ const qrService = require('./qr.service');
 const ApiError = require('../../utils/apiError');
 const minioService = require('../../services/minio.service');
 const { deleteResources } = require('../../utils/minioCleanup');
+const Settings = require('../settings/settings.model'); // ✅ Import Settings for passcode verification
 
 // ─── CRUD ────────────────────────────────────────────────────────────
 const create = asyncHandler(async (req, res) => {
@@ -123,7 +124,6 @@ const deleteAll = asyncHandler(async (req, res) => {
   for (const campaign of campaigns) {
     for (const recipient of campaign.recipients) {
       if (recipient.qrUrl && recipient.qrUrl.includes(minioService.config.publicBaseUrl)) {
-        // Extract object key from URL (remove base URL and bucket prefix if present)
         const url = new URL(recipient.qrUrl);
         let objectName = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
         if (objectName.startsWith(minioService.config.bucket + '/')) {
@@ -216,6 +216,35 @@ const resetRecipientCheckIn = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
+// ─── Rename a campaign ──────────────────────────────────────────
+const rename = asyncHandler(async (req, res) => {
+  const { campaignId } = req.params;
+  const { name } = req.body;
+  if (!name || !name.trim()) {
+    throw new ApiError(400, 'Campaign name is required');
+  }
+  const campaign = await campaignService.renameCampaign(campaignId, name, req.user._id);
+  res.json({ success: true, data: campaign });
+});
+
+// ─── Delete scan history entry (requires passcode) ────────────
+const deleteScanHistory = asyncHandler(async (req, res) => {
+  const { campaignId, scanId } = req.params;
+  const { passcode } = req.body;
+  if (!passcode) {
+    throw new ApiError(400, 'Passcode is required');
+  }
+
+  // Verify passcode from settings
+  const settings = await Settings.findOne({ userId: req.user._id });
+  if (!settings || settings.passcode !== passcode) {
+    throw new ApiError(401, 'Invalid passcode');
+  }
+
+  await campaignService.deleteScanHistoryEntry(campaignId, scanId);
+  res.json({ success: true, message: 'Scan history entry deleted' });
+});
+
 async function processQRCodes(campaignId) {
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) return;
@@ -268,4 +297,6 @@ module.exports = {
   resetRecipientCheckIn,
   sendManual,
   getAddRecipientsProgress,
+  rename,
+  deleteScanHistory,
 };

@@ -8,7 +8,9 @@ const auth = require('../../middleware/auth');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Existing routes
+// Add route in campaign.routes.js
+router.delete('/:campaignId/scan-history/:scanId', auth, ctrl.deleteScanHistory);
+router.put('/:campaignId/rename', auth, ctrl.rename);
 router.post('/', auth, validate(createCampaignSchema), ctrl.create);
 router.get('/history', auth, ctrl.getHistory);
 router.post('/launch', auth, validate(launchCampaignSchema), ctrl.launch);
