@@ -231,13 +231,19 @@ const rename = asyncHandler(async (req, res) => {
 const deleteScanHistory = asyncHandler(async (req, res) => {
   const { campaignId, scanId } = req.params;
   const { passcode } = req.body;
+
   if (!passcode) {
     throw new ApiError(400, 'Passcode is required');
   }
 
-  // Verify passcode from settings
-  const settings = await Settings.findOne({ userId: req.user._id });
-  if (!settings || settings.passcode !== passcode) {
+  // ✅ Use req.user.userId, same as settings service/controller
+  const settings = await Settings.findOne({ userId: req.user.userId });
+  if (!settings) {
+    throw new ApiError(404, 'Settings not found');
+  }
+
+  // Compare plaintext passcode (no hashing in the schema)
+  if (settings.passcode !== passcode.trim()) {
     throw new ApiError(401, 'Invalid passcode');
   }
 
