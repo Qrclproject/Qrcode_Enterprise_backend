@@ -3,7 +3,8 @@ const campaignService = require('./campaign.service');
 const Campaign = require('./campaign.model');
 const qrService = require('./qr.service');
 const ApiError = require('../../utils/apiError');
-const { deleteResources } = require('../../utils/cloudinaryCleanup');
+const minioService = require('../../services/minio.service');
+const { deleteResources } = require('../../utils/minioCleanup');
 
 // ─── CRUD ────────────────────────────────────────────────────────────
 const create = asyncHandler(async (req, res) => {
@@ -40,7 +41,7 @@ const uploadHeaderImage = asyncHandler(async (req, res) => {
   if (!req.file) {
     throw new ApiError(400, 'Image file is required');
   }
-  const imageUrl = await campaignService.uploadHeaderImage(req.file.buffer);
+  const imageUrl = await campaignService.uploadHeaderImage(req.file.buffer, req.file.originalname);
   res.json({ success: true, url: imageUrl });
 });
 
@@ -48,8 +49,6 @@ const uploadHeaderImage = asyncHandler(async (req, res) => {
 const updateHeaderImage = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { headerImageUrl, includeHeaderImage } = req.body;
-
-  console.log('🔧 updateHeaderImage controller received:', { headerImageUrl, includeHeaderImage });
 
   const campaign = await campaignService.updateCampaignHeaderImage(campaignId, {
     headerImageUrl: headerImageUrl !== undefined ? headerImageUrl : undefined,
@@ -99,8 +98,6 @@ const getQRProgress = asyncHandler(async (req, res) => {
   const completed = campaign.qrGenerationStatus?.completed || 0;
   const status = campaign.qrGenerationStatus?.status || 'pending';
 
-  console.log(`📊 QR progress for ${campaignId}: ${completed}/${total} (${status})`);
-
   res.json({
     success: true,
     total,
@@ -114,7 +111,7 @@ const getById = asyncHandler(async (req, res) => {
   res.json({ success: true, data: campaign });
 });
 
-// ─── Delete ALL ──────────────────────────────────────────────────────
+// ─── Delete ALL (now MinIO) ─────────────────────────────────────────
 const deleteAll = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const campaigns = await Campaign.find({ userId });
@@ -122,31 +119,30 @@ const deleteAll = asyncHandler(async (req, res) => {
     return res.json({ success: true, message: 'No campaigns to delete' });
   }
 
-  const allPublicIds = [];
+  const allObjectNames = [];
   for (const campaign of campaigns) {
     for (const recipient of campaign.recipients) {
-      if (recipient.qrUrl && recipient.qrUrl.includes('cloudinary.com')) {
-        const parts = recipient.qrUrl.split('/');
-        const folderAndFile = parts.slice(parts.indexOf('upload') + 2).join('/');
-        const publicId = folderAndFile.replace(/\.[^.]+$/, '');
-        allPublicIds.push(publicId);
+      if (recipient.qrUrl && recipient.qrUrl.includes(minioService.config.publicBaseUrl)) {
+        // Extract object key from URL (remove base URL and bucket prefix if present)
+        const url = new URL(recipient.qrUrl);
+        let objectName = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
+        if (objectName.startsWith(minioService.config.bucket + '/')) {
+          objectName = objectName.substring(minioService.config.bucket.length + 1);
+        }
+        allObjectNames.push(objectName);
       }
     }
   }
 
-  if (allPublicIds.length > 0) {
-    const batchSize = 100;
-    for (let i = 0; i < allPublicIds.length; i += batchSize) {
-      const batch = allPublicIds.slice(i, i + batchSize);
-      await deleteResources(batch);
-    }
+  if (allObjectNames.length > 0) {
+    await deleteResources(allObjectNames);
   }
 
   await Campaign.deleteMany({ userId });
 
   res.json({
     success: true,
-    message: `Deleted ${campaigns.length} campaigns and ${allPublicIds.length} images`,
+    message: `Deleted ${campaigns.length} campaigns and ${allObjectNames.length} images`,
   });
 });
 
@@ -271,5 +267,5 @@ module.exports = {
   addRecipients,
   resetRecipientCheckIn,
   sendManual,
-  getAddRecipientsProgress,   // 👈 new
+  getAddRecipientsProgress,
 };

@@ -11,9 +11,12 @@ module.exports = {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
     verifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
   },
-  cloudinary: {
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-    apiKey: process.env.CLOUDINARY_API_KEY,
-    apiSecret: process.env.CLOUDINARY_API_SECRET,
+  minio: {
+    endPoint: process.env.MINIO_ENDPOINT,
+    useSSL: process.env.MINIO_USE_SSL === 'true',
+    accessKey: process.env.MINIO_ACCESS_KEY,
+    secretKey: process.env.MINIO_SECRET_KEY,
+    bucket: process.env.MINIO_BUCKET || 'scanner',
+    publicBaseUrl: process.env.MINIO_PUBLIC_BASE_URL,
   },
 };

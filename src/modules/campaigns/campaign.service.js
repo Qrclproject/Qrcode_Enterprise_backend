@@ -4,17 +4,10 @@ const Design = require('../designs/design.model');
 const qrService = require('./qr.service');
 const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
-const { deleteResources } = require('../../utils/cloudinaryCleanup');
 const mongoose = require('mongoose');
 const { decrypt } = require('../../utils/encryption');
-const cloudinary = require('cloudinary').v2;
-const config = require('../../config');
-
-cloudinary.config({
-  cloud_name: config.cloudinary.cloudName,
-  api_key: config.cloudinary.apiKey,
-  api_secret: config.cloudinary.apiSecret,
-});
+const minioService = require('../../services/minio.service');
+const { deleteResources } = require('../../utils/minioCleanup'); // updated import
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
@@ -68,39 +61,39 @@ const createCampaign = async (data) => {
   return campaign;
 };
 
-// ─── Upload static header image to Cloudinary ─────────────────
-const uploadHeaderImage = (buffer) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: 'campaign_headers',
-        resource_type: 'image',
-        format: 'png',
-      },
-      (error, result) => (error ? reject(error) : resolve(result.secure_url))
-    );
-    stream.end(buffer);
-  });
+// ─── Upload header image to MinIO ─────────────────────────────────
+const uploadHeaderImage = async (fileBuffer, originalName) => {
+  const timestamp = Date.now();
+  const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
+  const objectName = `campaign_headers/${timestamp}_${safeName}`;
+
+  const ext = originalName.split('.').pop().toLowerCase();
+  const contentTypeMap = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+  };
+  const contentType = contentTypeMap[ext] || 'application/octet-stream';
+
+  const url = await minioService.uploadBuffer(objectName, fileBuffer, { 'Content-Type': contentType });
+  return url;
 };
 
 // ─── Update campaign header image / includeHeaderImage flag ───
 const updateCampaignHeaderImage = async (campaignId, updates) => {
-  console.log('🔧 updateCampaignHeaderImage called with:', { campaignId, updates });
-
   if (typeof updates === 'string') {
     updates = { headerImageUrl: updates };
   }
 
   const updateFields = {};
-
   if (updates.headerImageUrl !== undefined) {
     updateFields.headerImageUrl = updates.headerImageUrl;
   }
   if (updates.includeHeaderImage !== undefined) {
     updateFields.includeHeaderImage = updates.includeHeaderImage;
   }
-
-  console.log('🔧 Final updateFields:', updateFields);
 
   const campaign = await Campaign.findByIdAndUpdate(
     campaignId,
@@ -271,32 +264,39 @@ const retryFailedRecipients = async (campaignId) => {
   return campaign;
 };
 
+<<<<<<< HEAD
 // ─── Delete campaign ─────────────────────────────────────────────────
 // (Uses atomic delete, fine)
+=======
+// ─── Delete campaign (now uses MinIO) ─────────────────────────────
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
 const deleteCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
-  const publicIds = [];
+  const objectNames = [];
   for (const recipient of campaign.recipients) {
-    if (recipient.qrUrl && recipient.qrUrl.includes('cloudinary.com')) {
-      const parts = recipient.qrUrl.split('/');
-      const folderAndFile = parts.slice(parts.indexOf('upload') + 2).join('/');
-      const publicId = folderAndFile.replace(/\.[^.]+$/, '');
-      publicIds.push(publicId);
+    if (recipient.qrUrl && recipient.qrUrl.includes(minioService.config.publicBaseUrl)) {
+      // Extract the object key from the full URL
+      const url = new URL(recipient.qrUrl);
+      const pathname = url.pathname;
+      // Remove leading '/' and bucket prefix if present
+      let objectName = pathname.startsWith('/') ? pathname.slice(1) : pathname;
+      // If the URL contains the bucket name, remove it (the publicBaseUrl may include bucket)
+      if (objectName.startsWith(minioService.config.bucket + '/')) {
+        objectName = objectName.substring(minioService.config.bucket.length + 1);
+      }
+      objectNames.push(objectName);
     }
   }
 
-  if (publicIds.length > 0) {
-    const batchSize = 100;
-    for (let i = 0; i < publicIds.length; i += batchSize) {
-      const batch = publicIds.slice(i, i + batchSize);
-      await deleteResources(batch);
-    }
+  if (objectNames.length > 0) {
+    // deleteResources expects object names without bucket prefix
+    await deleteResources(objectNames);
   }
 
   await Campaign.findByIdAndDelete(campaignId);
-  return { deleted: true, imagesRemoved: publicIds.length };
+  return { deleted: true, imagesRemoved: objectNames.length };
 };
 
 // ─── Check‑in recipient (FULLY ATOMIC) ─────────────────────────────
@@ -330,7 +330,10 @@ const checkInRecipient = async (campaignId, qrData) => {
   // Check if recipient exists and is not already checked in
   const recipient = campaign.recipients.find(r => r.phone === phone);
   if (!recipient) {
+<<<<<<< HEAD
     // Do NOT attempt to save a failure log here – just throw
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
     throw new ApiError(404, 'Recipient not found for this event');
   }
   if (recipient.checkedIn) {
@@ -380,7 +383,10 @@ const checkInRecipient = async (campaignId, qrData) => {
   );
 
   if (!updatedCampaign) {
+<<<<<<< HEAD
     // Could be that the recipient was already checked in (race) or not found
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
     throw new ApiError(400, 'Recipient not found or already checked in');
   }
 
@@ -415,12 +421,19 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
     throw new ApiError(400, 'Recipient is not checked in');
   }
 
+<<<<<<< HEAD
   // Perform atomic update
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
   const updatedCampaign = await Campaign.findOneAndUpdate(
     {
       _id: campaignId,
       'recipients._id': recipient._id,
+<<<<<<< HEAD
       'recipients.checkedIn': true, // ensure we only reset if currently checked in
+=======
+      'recipients.checkedIn': true,
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
     },
     {
       $set: {
@@ -548,11 +561,16 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   return { success: true, phone, templateName };
 };
 
+<<<<<<< HEAD
 
 
 // ─── Add recipients to existing campaign (ATOMIC) ──────────────────
 const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
   // Normalize phone numbers
+=======
+// ─── Add recipients to existing campaign (ATOMIC) ──────────────────
+const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
   const normalizedRecipients = newRecipients.map(r => ({
     ...r,
     phone: normalizePhone(r.phone || ''),
@@ -561,7 +579,10 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
     checkedInAt: null,
   }));
 
+<<<<<<< HEAD
   // Atomic push of new recipients
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
   const updatedCampaign = await Campaign.findOneAndUpdate(
     { _id: campaignId },
     {
@@ -585,11 +606,15 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
 
   if (!updatedCampaign) throw new ApiError(404, 'Campaign not found');
 
+<<<<<<< HEAD
   // Get IDs of newly added recipients (the last N items)
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
   const added = updatedCampaign.recipients.slice(-normalizedRecipients.length);
   const recipientIds = added.map(r => r._id);
 
   // Start background processing (do not await)
+<<<<<<< HEAD
 const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
   // Phase 1: QR generation (if requested)
   if (generateQr) {
@@ -607,12 +632,37 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
     );
 
     // Fetch campaign to get designId and mapping (read‑only)
+=======
+  processNewRecipients(campaignId, recipientIds, { generateQr, sendNow });
+
+  return updatedCampaign;
+};
+
+// ─── Background processing of new recipients ──────────────────────
+const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
+  if (generateQr) {
+    await Campaign.findOneAndUpdate(
+      { _id: campaignId },
+      {
+        $set: {
+          'addRecipientsStatus.phase': 'qr',
+          'addRecipientsStatus.total': recipientIds.length,
+          'addRecipientsStatus.completed': 0,
+          'addRecipientsStatus.status': 'processing',
+        },
+      }
+    );
+
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
     const campaign = await Campaign.findById(campaignId).select('designId mapping');
     const design = campaign.designId ? await Design.findById(campaign.designId) : null;
     const mapping = campaign.mapping || {};
 
     for (const id of recipientIds) {
+<<<<<<< HEAD
       // Fetch the recipient separately to get its data for QR generation
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
       const recipientDoc = await Campaign.findOne(
         { _id: campaignId, 'recipients._id': id },
         { 'recipients.$': 1 }
@@ -622,7 +672,10 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
 
       try {
         const qrUrl = await qrService.generateRecipientQR(recipient, campaignId, design, mapping);
+<<<<<<< HEAD
         // Atomically update the recipient's qrUrl
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
         await Campaign.findOneAndUpdate(
           { _id: campaignId, 'recipients._id': id },
           { $set: { 'recipients.$.qrUrl': qrUrl } }
@@ -630,7 +683,10 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
       } catch (err) {
         console.error(`QR generation failed for ${recipient.phone}:`, err.message);
       }
+<<<<<<< HEAD
       // Increment completed count atomically
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
       await Campaign.findOneAndUpdate(
         { _id: campaignId },
         { $inc: { 'addRecipientsStatus.completed': 1 } }
@@ -638,7 +694,10 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
     }
   }
 
+<<<<<<< HEAD
   // Phase 2: Sending (if requested) – unchanged
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
   if (sendNow) {
     await Campaign.findOneAndUpdate(
       { _id: campaignId },
@@ -654,7 +713,10 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
     await sendCampaignToRecipients(campaignId, recipientIds);
   }
 
+<<<<<<< HEAD
   // Final status – atomic
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
   await Campaign.findOneAndUpdate(
     { _id: campaignId },
     {
@@ -664,8 +726,11 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
       },
     }
   );
+<<<<<<< HEAD
 };
   return updatedCampaign;
+=======
+>>>>>>> 8ffd56e (feat:joe me  show s nail  show add in whatsappTemplateName to templates and fix variant preview reset)
 };
 
 // ─── Send template messages to specific recipients ────────────────

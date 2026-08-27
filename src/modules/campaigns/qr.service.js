@@ -1,38 +1,39 @@
+// src/modules/campaigns/qr.service.js
+
 const QRCode = require('qrcode');
-const cloudinary = require('cloudinary').v2;
-const config = require('../../config');
 const { overlayDesign } = require('./overlay.service');
 const { encrypt } = require('../../utils/encryption');
+const minioService = require('../../services/minio.service');  // new import
 
-cloudinary.config({
-  cloud_name: config.cloudinary.cloudName,
-  api_key: config.cloudinary.apiKey,
-  api_secret: config.cloudinary.apiSecret,
-});
+/**
+ * Upload a buffer to MinIO and return its public URL.
+ * @param {Buffer} buffer
+ * @param {string} publicId - Unique identifier (without extension)
+ * @returns {Promise<string>}
+ */
+const uploadToMinio = async (buffer, publicId) => {
+  // Structure: event_qrcodes/campaign_<id>/recipient_<id>.png
+  const objectName = `event_qrcodes/${publicId}.png`;
+  const url = await minioService.uploadBuffer(objectName, buffer, { 'Content-Type': 'image/png' });
+  return url;
+};
 
-const uploadToCloudinary = (buffer, publicId) =>
-  new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: 'event_qrcodes',
-        public_id: publicId,
-        resource_type: 'image',
-        format: 'png',
-        overwrite: true,
-      },
-      (error, result) => (error ? reject(error) : resolve(result.secure_url))
-    );
-    stream.end(buffer);
-  });
-
+/**
+ * Generate a QR code image for a recipient, optionally overlaying a design.
+ * @param {object} recipient
+ * @param {string} campaignId
+ * @param {object|null} design
+ * @param {object} mapping
+ * @returns {Promise<string>} - Public URL of the generated QR code
+ */
 const generateRecipientQR = async (recipient, campaignId, design = null, mapping = {}) => {
-  // ─── Build core QR data ──────────────────────────────────────
+  // Build core QR data
   let rawData = `${campaignId}_${recipient.phone}_${Date.now()}`;
 
-  // ─── Append custom fields if defined in design ──────────────
+  // Append custom fields if defined in design
   if (design && design.qrDataFields && design.qrDataFields.length > 0) {
     const extraParts = design.qrDataFields.map(field => {
-      const columnName = mapping[field]; // field is placeholder like "1"
+      const columnName = mapping[field];
       return columnName ? (recipient[columnName] || '') : '';
     });
     rawData += '|' + extraParts.join('|');
@@ -40,7 +41,7 @@ const generateRecipientQR = async (recipient, campaignId, design = null, mapping
 
   const encryptedData = encrypt(rawData);
 
-  // ─── Generate final image ────────────────────────────────────
+  // Generate final image
   let finalBuffer;
   if (design) {
     // Build text overlays with recipient data
@@ -60,7 +61,7 @@ const generateRecipientQR = async (recipient, campaignId, design = null, mapping
       };
     });
 
-    // ✅ Pass the FULL qrConfig including all shapes and colours
+    // Pass the full qrConfig including all shapes and colours
     const qrConfig = {
       lightColor: design.qrConfig?.lightColor || '#ffffff',
       finderOuterColor: design.qrConfig?.finderOuterColor || '#000000',
@@ -88,7 +89,7 @@ const generateRecipientQR = async (recipient, campaignId, design = null, mapping
   }
 
   const publicId = `campaign_${campaignId}/recipient_${recipient._id}`;
-  return uploadToCloudinary(finalBuffer, publicId);
+  return uploadToMinio(finalBuffer, publicId);
 };
 
 module.exports = { generateRecipientQR };

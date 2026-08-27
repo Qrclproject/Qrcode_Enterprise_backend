@@ -1,44 +1,124 @@
+// src/modules/designs/design.service.js
+
 const Design = require('./design.model');
-const cloudinary = require('cloudinary').v2;
-const config = require('../../config');
+const ApiError = require('../../utils/apiError');
+const minioService = require('../../services/minio.service');
 
-cloudinary.config({
-  cloud_name: config.cloudinary.cloudName,
-  api_key: config.cloudinary.apiKey,
-  api_secret: config.cloudinary.apiSecret,
-});
+/**
+ * Upload a design image buffer to MinIO.
+ * @param {Buffer} buffer
+ * @param {string} originalName
+ * @returns {Promise<string>} - Public URL
+ */
+const uploadDesignImage = async (buffer, originalName) => {
+  const timestamp = Date.now();
+  const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
+  const objectName = `design_images/${timestamp}_${safeName}`;
 
-const uploadTemplateImage = (buffer) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: 'design_templates',
-        resource_type: 'image',
-        format: 'png',
-      },
-      (error, result) => (error ? reject(error) : resolve(result.secure_url))
-    );
-    stream.end(buffer);
-  });
+  const ext = originalName.split('.').pop().toLowerCase();
+  const contentTypeMap = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+  };
+  const contentType = contentTypeMap[ext] || 'application/octet-stream';
+
+  const url = await minioService.uploadBuffer(objectName, buffer, { 'Content-Type': contentType });
+  return url;
 };
 
-const createDesign = async (data, fileBuffer) => {
-  const imageUrl = await uploadTemplateImage(fileBuffer);
-  const design = await Design.create({
-    userId: data.userId,
-    name: data.name,
-    imageUrl,
-    qrPosition: data.qrPosition,
-    qrPadding: data.qrPadding !== undefined ? data.qrPadding : 15,
-    qrConfig: data.qrConfig || {},
-    textOverlays: data.textOverlays || [],
-    qrDataFields: data.qrDataFields || [],
-  });
+/**
+ * Delete a design image from MinIO by its object key.
+ * @param {string} imageUrl - Full public URL of the image
+ */
+const deleteDesignImage = async (imageUrl) => {
+  if (!imageUrl || !imageUrl.includes(minioService.config.publicBaseUrl)) return;
+
+  const url = new URL(imageUrl);
+  let objectName = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
+  if (objectName.startsWith(minioService.config.bucket + '/')) {
+    objectName = objectName.substring(minioService.config.bucket.length + 1);
+  }
+  await minioService.deleteObject(objectName);
+};
+
+/**
+ * Create a new design.
+ * @param {object} data - Design data, must include userId.
+ * @returns {Promise<object>}
+ */
+const createDesign = async (data) => {
+  if (!data.userId) {
+    throw new ApiError(400, 'userId is required');
+  }
+  const design = await Design.create(data);
   return design;
 };
 
-const getDesignsByUser = (userId) => {
+/**
+ * Update an existing design (ensure ownership).
+ * @param {string} designId
+ * @param {object} updates
+ * @param {string} userId
+ * @returns {Promise<object>}
+ */
+const updateDesign = async (designId, updates, userId) => {
+  const design = await Design.findOneAndUpdate(
+    { _id: designId, userId },
+    updates,
+    { new: true, runValidators: true }
+  );
+  if (!design) throw new ApiError(404, 'Design not found or you do not have permission');
+  return design;
+};
+
+/**
+ * Get all designs for a user.
+ * @param {string} userId
+ * @returns {Promise<Array>}
+ */
+const getAllDesigns = async (userId) => {
   return Design.find({ userId }).sort({ createdAt: -1 });
 };
 
-module.exports = { createDesign, getDesignsByUser };
+/**
+ * Get a single design by ID (ensure ownership).
+ * @param {string} designId
+ * @param {string} userId
+ * @returns {Promise<object>}
+ */
+const getDesignById = async (designId, userId) => {
+  const design = await Design.findOne({ _id: designId, userId });
+  if (!design) throw new ApiError(404, 'Design not found');
+  return design;
+};
+
+/**
+ * Delete a design and its associated image from MinIO.
+ * @param {string} designId
+ * @param {string} userId
+ * @returns {Promise<object>}
+ */
+const deleteDesign = async (designId, userId) => {
+  const design = await Design.findOne({ _id: designId, userId });
+  if (!design) throw new ApiError(404, 'Design not found');
+
+  if (design.imageUrl) {
+    await deleteDesignImage(design.imageUrl);
+  }
+
+  await Design.findByIdAndDelete(designId);
+  return { deleted: true };
+};
+
+module.exports = {
+  uploadDesignImage,
+  deleteDesignImage,
+  createDesign,
+  updateDesign,
+  getAllDesigns,
+  getDesignById,
+  deleteDesign,
+};

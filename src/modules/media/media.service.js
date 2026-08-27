@@ -1,64 +1,57 @@
-const cloudinary = require('cloudinary').v2;
-const config = require('../../config');
+// src/modules/media/media.service.js
+
 const ApiError = require('../../utils/apiError');
+const minioService = require('../../services/minio.service');  // new import
 
-cloudinary.config({
-  cloud_name: config.cloudinary.cloudName,
-  api_key: config.cloudinary.apiKey,
-  api_secret: config.cloudinary.apiSecret,
-});
+// Prefixes (folders) to list – adjust as needed
+const PREFIXES = ['event_qrcodes', 'campaign_headers'];
 
-const FOLDERS = ['event_qrcodes', 'campaign_headers'];
-
-// List all images in the specified folders
+/**
+ * List all images in the configured prefixes.
+ * @returns {Promise<Array>} - Array of image metadata
+ */
 const listImages = async () => {
   const allResources = [];
 
-  for (const folder of FOLDERS) {
+  for (const prefix of PREFIXES) {
     try {
-      const result = await cloudinary.api.resources({
-        type: 'upload',
-        prefix: folder,
-        max_results: 500, // adjust if you have more
-      });
+      const objects = await minioService.listObjects(prefix);
       allResources.push(
-        ...result.resources.map(r => ({
-          public_id: r.public_id,
-          url: r.secure_url,
-          folder: r.folder,
-          created_at: r.created_at,
+        ...objects.map(obj => ({
+          public_id: obj.name,               // MinIO object key
+          url: `${minioService.config.publicBaseUrl}/${obj.name}`,
+          folder: prefix,
+          created_at: obj.lastModified,
         }))
       );
     } catch (err) {
-      console.error(`Failed to list folder ${folder}:`, err.message);
+      console.error(`Failed to list prefix ${prefix}:`, err.message);
     }
   }
 
   return allResources;
 };
 
-// Delete multiple images by public IDs
+/**
+ * Delete multiple objects by their keys.
+ * @param {string[]} publicIds - Array of object keys
+ * @returns {Promise<object>}
+ */
 const deleteImages = async (publicIds) => {
   if (!Array.isArray(publicIds) || publicIds.length === 0) {
     throw new ApiError(400, 'No image IDs provided');
   }
 
-  // Cloudinary delete_resources can handle up to 100 IDs per call
-  const batchSize = 100;
-  const results = [];
-
-  for (let i = 0; i < publicIds.length; i += batchSize) {
-    const batch = publicIds.slice(i, i + batchSize);
+  for (const objectName of publicIds) {
     try {
-      const res = await cloudinary.api.delete_resources(batch, { resource_type: 'image' });
-      results.push(res);
+      await minioService.deleteObject(objectName);
     } catch (err) {
-      console.error(`Failed to delete batch ${i}:`, err.message);
+      console.error(`Failed to delete ${objectName}:`, err.message);
       throw new ApiError(500, `Failed to delete some images: ${err.message}`);
     }
   }
 
-  return results;
+  return { deleted: publicIds.length };
 };
 
 module.exports = { listImages, deleteImages };

@@ -1,22 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() });
 const ctrl = require('./design.controller');
 const auth = require('../../middleware/auth');
-const validate = require('../../middleware/validate');
-const { createDesignSchema, updateDesignSchema } = require('./design.validation');
 
-// POST – create with image upload
-router.post('/', auth, upload.single('image'), validate(createDesignSchema), ctrl.create);
+const upload = multer({ storage: multer.memoryStorage() });
 
-// GET – list designs
-router.get('/', auth, ctrl.getAll);
-
-// PUT – update design (name, qrPosition, qrPadding)
-router.put('/:designId', auth, validate(updateDesignSchema), ctrl.updateDesign);
-
-// DELETE – delete design
+router.post('/', auth, upload.single('image'), ctrl.createDesign);
+router.get('/', auth, ctrl.getDesigns);
+router.get('/:designId', auth, ctrl.getDesign);
+router.put('/:designId', auth, upload.single('image'), ctrl.updateDesign);
 router.delete('/:designId', auth, ctrl.deleteDesign);
 
 module.exports = router;

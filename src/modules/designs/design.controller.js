@@ -1,133 +1,130 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const designService = require('./design.service');
-const Design = require('./design.model');
 const ApiError = require('../../utils/apiError');
 
-const parseJsonField = (value) => {
-  if (!value) return undefined;
+/**
+ * Safely parse a JSON field. If the value is already an object, return it.
+ * If it's a string, try to parse it. If undefined/null, return undefined.
+ */
+const safeJsonParse = (value, fallback = undefined) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'object') return value; // already an object
   if (typeof value === 'string') {
-    try { return JSON.parse(value); } catch { return undefined; }
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      throw new ApiError(400, 'Invalid JSON format in request');
+    }
   }
-  return value;
+  return fallback;
 };
 
-// ─── CREATE ────────────────────────────────────────────────────────
-const create = asyncHandler(async (req, res) => {
+/**
+ * Create a new design (with image upload).
+ */
+const createDesign = asyncHandler(async (req, res) => {
+  const { name } = req.body;
+
   if (!req.file) {
-    return res.status(400).json({ success: false, message: 'Image file is required' });
+    throw new ApiError(400, 'Design image is required');
   }
 
-  const { name, qrPosition, qrPadding } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ success: false, message: 'Design name is required' });
-  }
+  // Upload image to MinIO
+  const imageUrl = await designService.uploadDesignImage(req.file.buffer, req.file.originalname);
 
-  let qrPos;
-  try {
-    qrPos = typeof qrPosition === 'string' ? JSON.parse(qrPosition) : qrPosition;
-    if (
-      typeof qrPos.x !== 'number' ||
-      typeof qrPos.y !== 'number' ||
-      typeof qrPos.width !== 'number' ||
-      typeof qrPos.height !== 'number'
-    ) {
-      throw new Error('Invalid position values');
-    }
-  } catch (err) {
-    return res.status(400).json({ success: false, message: 'Invalid QR position data' });
-  }
+  // Parse JSON fields safely
+  const qrPosition = safeJsonParse(req.body.qrPosition, { x: 50, y: 50, width: 150, height: 150 });
+  const qrPadding = req.body.qrPadding !== undefined ? Number(req.body.qrPadding) : 15;
+  const qrConfig = safeJsonParse(req.body.qrConfig, undefined);
+  const textOverlays = safeJsonParse(req.body.textOverlays, []);
+  const qrDataFields = safeJsonParse(req.body.qrDataFields, []);
 
-  let padding = 15;
-  if (qrPadding !== undefined) {
-    const num = Number(qrPadding);
-    if (!isNaN(num) && num >= 0 && num <= 50) {
-      padding = num;
-    } else {
-      return res.status(400).json({ success: false, message: 'qrPadding must be between 0 and 50' });
-    }
-  }
+  const designData = {
+    userId: req.user._id,
+    name: name || 'Untitled Design',
+    imageUrl,
+    qrPosition,
+    qrPadding,
+    qrConfig,
+    textOverlays,
+    qrDataFields,
+  };
 
-  const qrConfig = parseJsonField(req.body.qrConfig) || {};
-  const textOverlays = parseJsonField(req.body.textOverlays) || [];
-  const qrDataFields = parseJsonField(req.body.qrDataFields) || [];
-
-  const design = await designService.createDesign(
-    {
-      userId: req.user._id,
-      name: name.trim(),
-      qrPosition: qrPos,
-      qrPadding: padding,
-      qrConfig,
-      textOverlays,
-      qrDataFields,
-    },
-    req.file.buffer
-  );
-
+  const design = await designService.createDesign(designData);
   res.status(201).json({ success: true, data: design });
 });
 
-// ─── GET ALL ──────────────────────────────────────────────────────
-const getAll = asyncHandler(async (req, res) => {
-  const designs = await designService.getDesignsByUser(req.user._id);
-  res.json({ success: true, data: designs });
-});
-
-// ─── UPDATE ──────────────────────────────────────────────────────
+/**
+ * Update an existing design (with optional image replacement).
+ */
 const updateDesign = asyncHandler(async (req, res) => {
   const { designId } = req.params;
-  const { name, qrPosition, qrPadding } = req.body;
+  const updates = {};
 
-  const design = await Design.findOne({ _id: designId, userId: req.user._id });
-  if (!design) throw new ApiError(404, 'Design not found');
+  const { name } = req.body;
 
-  if (name !== undefined) design.name = name.trim();
-  if (qrPosition) {
-    let pos = qrPosition;
-    if (typeof pos === 'string') {
-      try { pos = JSON.parse(pos); } catch (e) { throw new ApiError(400, 'Invalid QR position format'); }
-    }
-    if (
-      typeof pos.x !== 'number' ||
-      typeof pos.y !== 'number' ||
-      typeof pos.width !== 'number' ||
-      typeof pos.height !== 'number'
-    ) {
-      throw new ApiError(400, 'Invalid QR position values');
-    }
-    design.qrPosition = pos;
+  if (name) updates.name = name;
+
+  // Safely parse and add optional fields if present
+  if (req.body.qrPosition !== undefined) {
+    updates.qrPosition = safeJsonParse(req.body.qrPosition);
   }
-  if (qrPadding !== undefined) {
-    const num = Number(qrPadding);
-    if (isNaN(num) || num < 0 || num > 50) {
-      throw new ApiError(400, 'qrPadding must be between 0 and 50');
-    }
-    design.qrPadding = num;
+  if (req.body.qrPadding !== undefined) {
+    updates.qrPadding = Number(req.body.qrPadding);
   }
-
   if (req.body.qrConfig !== undefined) {
-    const config = parseJsonField(req.body.qrConfig);
-    if (config) design.qrConfig = config;
+    updates.qrConfig = safeJsonParse(req.body.qrConfig);
   }
   if (req.body.textOverlays !== undefined) {
-    const overlays = parseJsonField(req.body.textOverlays);
-    if (overlays) design.textOverlays = overlays;
+    updates.textOverlays = safeJsonParse(req.body.textOverlays);
   }
   if (req.body.qrDataFields !== undefined) {
-    const fields = parseJsonField(req.body.qrDataFields);
-    if (fields) design.qrDataFields = fields;
+    updates.qrDataFields = safeJsonParse(req.body.qrDataFields);
   }
 
-  await design.save();
+  // If a new image is uploaded, replace the old one
+  if (req.file) {
+    // Optionally delete old image
+    const existingDesign = await designService.getDesignById(designId, req.user._id);
+    if (existingDesign.imageUrl) {
+      await designService.deleteDesignImage(existingDesign.imageUrl);
+    }
+    updates.imageUrl = await designService.uploadDesignImage(req.file.buffer, req.file.originalname);
+  }
+
+  // Pass userId for ownership check
+  const design = await designService.updateDesign(designId, updates, req.user._id);
   res.json({ success: true, data: design });
 });
 
-// ─── DELETE ──────────────────────────────────────────────────────
-const deleteDesign = asyncHandler(async (req, res) => {
-  const { designId } = req.params;
-  const design = await Design.findOneAndDelete({ _id: designId, userId: req.user._id });
-  if (!design) throw new ApiError(404, 'Design not found');
-  res.json({ success: true, message: 'Design deleted' });
+/**
+ * Get all designs for the current user.
+ */
+const getDesigns = asyncHandler(async (req, res) => {
+  const designs = await designService.getAllDesigns(req.user._id);
+  res.json({ success: true, data: designs });
 });
 
-module.exports = { create, getAll, updateDesign, deleteDesign };
+/**
+ * Get a single design by ID (ensure ownership).
+ */
+const getDesign = asyncHandler(async (req, res) => {
+  const design = await designService.getDesignById(req.params.designId, req.user._id);
+  res.json({ success: true, data: design });
+});
+
+/**
+ * Delete a design (ensure ownership).
+ */
+const deleteDesign = asyncHandler(async (req, res) => {
+  const result = await designService.deleteDesign(req.params.designId, req.user._id);
+  res.json({ success: true, message: 'Design deleted', data: result });
+});
+
+module.exports = {
+  createDesign,
+  updateDesign,
+  getDesigns,
+  getDesign,
+  deleteDesign,
+};

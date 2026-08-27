@@ -6,7 +6,6 @@ const { initScheduler } = require('./utils/scheduler');
 connectDB().then(() => {
   app.listen(config.port, () => {
     console.log(`Server running on port ${config.port}`);
-    // Initialize the background job scheduler
     initScheduler();
   });
 });
