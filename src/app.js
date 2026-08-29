@@ -17,7 +17,7 @@ const app = express();
 // ─── CORS: allow both local dev and production frontend ──────────
 const allowedOrigins = [
   'http://localhost:5173',                     // local development
-  'https://qrclfrontendevent.vercel.app',      // production
+  'https://qrcode-enterprise.vercel.app',      // production
 ];
 
 app.use(cors({
