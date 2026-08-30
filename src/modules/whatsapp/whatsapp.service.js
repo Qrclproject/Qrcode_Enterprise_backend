@@ -33,7 +33,8 @@ const getCredentials = async (userId) => {
 // ─── Send a template message (optionally with a specific user) ────
 const sendTemplateMessage = async (to, templateName, components = [], userId = null) => {
   const creds = await getCredentials(userId);
-  const url = `https://graph.facebook.com/v22.0/${creds.phoneNumberId}/messages`;
+  const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
+const url = `https://graph.facebook.com/${apiVersion}/${creds.phoneNumberId}/messages`;
 
   const body = {
     messaging_product: 'whatsapp',
