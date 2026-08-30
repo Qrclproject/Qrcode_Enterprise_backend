@@ -14,9 +14,13 @@ const designRoutes = require('./modules/designs/design.routes');
 
 const app = express();
 
+// ─── TRUST REVERSE PROXY FOR RENDER DEPLOYMENTS ─────────────────
+// This must be set before any rate limiters process requests
+app.set('trust proxy', 1);
+
 // ─── CORS: allow both local dev and production frontend ──────────
 const allowedOrigins = [
-  'http://localhost:5173',                     // local development
+  'http://localhost:5173',    
   'https://qrcode-enterprise.vercel.app',      // production
 ];
 
