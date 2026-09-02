@@ -810,6 +810,5 @@ module.exports = {
   sendManualMessage,
   addRecipientsToCampaign,
   sendCampaignToRecipients,
-  renameCampaign,
   deleteScanHistoryEntry,
 };
