@@ -48,45 +48,39 @@ const handleWebhookEvent = async (req, res) => {
         console.log('\n--- Processing Incoming Message ---');
         console.log('Raw message:', JSON.stringify(msg, null, 2));
 
-        const phone = msg.from; // includes '+' sign
-        const normalizedPhone = phone.replace(/\D/g, ''); // remove non-digits
+        const phone = msg.from;
+        const normalizedPhone = phone.replace(/\D/g, '');
         console.log(`📱 Normalized phone: ${normalizedPhone}`);
 
-        // Find campaign containing this phone number
-        const campaign = await Campaign.findOne({ 'recipients.phone': normalizedPhone });
-        if (!campaign) {
+        // 🔍 Find ALL campaigns that contain this phone number
+        const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone });
+        if (!campaigns || campaigns.length === 0) {
           console.log(`❌ No campaign found for phone ${normalizedPhone}`);
           continue;
         }
 
-        const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
-        if (!recipient) {
-          console.log(`❌ No recipient found for phone ${normalizedPhone} in campaign ${campaign._id}`);
-          continue;
-        }
-
-        console.log(`✅ Found recipient: ${recipient.name || recipient.phone} in campaign ${campaign.name}`);
-
-        // Extract message content
         const messageBody = msg.text?.body || '';
         const mediaUrl = msg.image?.link || msg.document?.link || msg.audio?.link || msg.video?.link || null;
         const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
-        console.log('Content:', { messageBody, mediaUrl, timestamp });
+        // Save incoming message in each campaign that contains this recipient
+        for (const campaign of campaigns) {
+          const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
+          if (!recipient) continue;
 
-        // Save incoming message
-        const savedMessage = await WhatsAppMessage.create({
-          campaignId: campaign._id,
-          recipientId: recipient._id,
-          phone: normalizedPhone,
-          direction: 'incoming',
-          body: messageBody,
-          mediaUrl,
-          whatsappMessageId: msg.id,
-          timestamp,
-        });
+          console.log(`✅ Saving to campaign: ${campaign.name} (ID: ${campaign._id})`);
 
-        console.log(`💾 Message saved with ID: ${savedMessage._id}`);
+          await WhatsAppMessage.create({
+            campaignId: campaign._id,
+            recipientId: recipient._id,
+            phone: normalizedPhone,
+            direction: 'incoming',
+            body: messageBody,
+            mediaUrl,
+            whatsappMessageId: msg.id,
+            timestamp,
+          });
+        }
       } catch (err) {
         console.error('❌ Failed to store incoming WhatsApp message:', err.message);
         console.error(err.stack);
@@ -104,19 +98,18 @@ const handleWebhookEvent = async (req, res) => {
         const normalizedPhone = phone.replace(/\D/g, '');
         console.log(`Normalized phone: ${normalizedPhone}, Delivery status: ${deliveryStatus}`);
 
-        const campaign = await Campaign.findOne({ 'recipients.phone': normalizedPhone, status: 'sending' });
-        if (campaign) {
+        // Find all campaigns with this recipient and status 'sending'
+        const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone, status: 'sending' });
+        for (const campaign of campaigns) {
           const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
           if (recipient && deliveryStatus === 'failed') {
-            console.log(`❌ Marking recipient ${recipient.phone} as failed`);
+            console.log(`❌ Marking recipient ${recipient.phone} as failed in campaign ${campaign._id}`);
             recipient.status = 'failed';
             recipient.failureReason = 'WhatsApp delivery failed';
             campaign.failed += 1;
-            campaign.delivered -= 1; // adjust if previously counted
+            campaign.delivered -= 1;
             await campaign.save();
           }
-        } else {
-          console.log(`No campaign in 'sending' status for phone ${normalizedPhone}`);
         }
       } catch (err) {
         console.error('❌ Failed to process message status:', err.message);
