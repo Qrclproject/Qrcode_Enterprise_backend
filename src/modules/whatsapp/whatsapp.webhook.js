@@ -59,7 +59,21 @@ const handleWebhookEvent = async (req, res) => {
           continue;
         }
 
-        const messageBody = msg.text?.body || '';
+        // Extract message content based on type
+        let messageBody = '';
+        if (msg.type === 'text' && msg.text) {
+          messageBody = msg.text.body || '';
+        } else if (msg.type === 'interactive' && msg.interactive) {
+          // Quick reply button
+          if (msg.interactive.button_reply) {
+            messageBody = msg.interactive.button_reply.title || '';
+          }
+          // List reply (if used)
+          else if (msg.interactive.list_reply) {
+            messageBody = msg.interactive.list_reply.title || '';
+          }
+        }
+
         const mediaUrl = msg.image?.link || msg.document?.link || msg.audio?.link || msg.video?.link || null;
         const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
