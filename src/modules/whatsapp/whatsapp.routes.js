@@ -5,33 +5,38 @@ const { verifyWebhook, handleWebhookEvent } = require('./whatsapp.webhook');
 const {
   sendTestMessage,
   getCredentials,
+  sendTextMessage,
   checkNumbers,   // 👈 import
 } = require('./whatsapp.service');
 const auth = require('../../middleware/auth');
 const asyncHandler = require('../../utils/asyncHandler');
-
+const Campaign = require('../campaigns/campaign.model');
+const WhatsAppMessage = require('../campaigns/message.model');
 // Webhook – no auth (called by Meta)
 router.get('/webhook', verifyWebhook);
 router.post('/webhook', handleWebhookEvent);
 router.post('/send-text', auth, asyncHandler(async (req, res) => {
-  const { phone, text, userId } = req.body;
-  const normalizedPhone = phone.replace(/\D/g, '');
-  const result = await sendTextMessage(normalizedPhone, text, userId);
+  const { phone, text } = req.body;
+  if (!phone || !text) throw new ApiError(400, 'Phone and text are required');
 
-  // Find the campaign and recipient (optional, but helpful)
-  const campaign = await Campaign.findOne({ 'recipients.phone': normalizedPhone });
-  const recipient = campaign?.recipients.find(r => r.phone === normalizedPhone);
-  
-  if (campaign && recipient) {
-    await WhatsAppMessage.create({
-      campaignId: campaign._id,
-      recipientId: recipient._id,
-      phone: normalizedPhone,
-      direction: 'outgoing',
-      body: text,
-      whatsappMessageId: result.messages?.[0]?.id,
-      timestamp: new Date(),
-    });
+  const normalizedPhone = phone.replace(/\D/g, '');
+  const result = await sendTextMessage(normalizedPhone, text);
+
+  // Save outgoing message in all matching campaigns
+  const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone });
+  for (const campaign of campaigns) {
+    const recipient = campaign.recipients.find(r => r.phone === normalizedPhone);
+    if (recipient) {
+      await WhatsAppMessage.create({
+        campaignId: campaign._id,
+        recipientId: recipient._id,
+        phone: normalizedPhone,
+        direction: 'outgoing',
+        body: text,
+        whatsappMessageId: result.messages?.[0]?.id,
+        timestamp: new Date(),
+      });
+    }
   }
 
   res.json({ success: true, data: result });

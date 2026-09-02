@@ -29,6 +29,7 @@ const getCredentials = async (userId) => {
     accessToken: config.whatsapp.accessToken,
   };
 };
+// At the bottom, add the new function
 const sendTextMessage = async (to, text, userId = null) => {
   const creds = await getCredentials(userId);
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
@@ -36,7 +37,7 @@ const sendTextMessage = async (to, text, userId = null) => {
 
   const body = {
     messaging_product: 'whatsapp',
-    to,               // phone in digits only, e.g., "2349133281741"
+    to,               // digits only, e.g., "2349133281741"
     type: 'text',
     text: { body: text },
   };
