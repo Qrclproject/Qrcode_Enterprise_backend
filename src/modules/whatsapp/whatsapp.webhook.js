@@ -59,20 +59,42 @@ const handleWebhookEvent = async (req, res) => {
           continue;
         }
 
-        // Extract message content based on type
+        // --- Robust extraction of message body ---
         let messageBody = '';
+
+        // 1. Text message
         if (msg.type === 'text' && msg.text) {
           messageBody = msg.text.body || '';
-        } else if (msg.type === 'interactive' && msg.interactive) {
+        }
+        // 2. Interactive message (quick reply / list reply)
+        else if (msg.type === 'interactive' && msg.interactive) {
           // Quick reply button
           if (msg.interactive.button_reply) {
-            messageBody = msg.interactive.button_reply.title || '';
+            messageBody =
+              msg.interactive.button_reply.title ||
+              msg.interactive.button_reply.payload ||
+              msg.interactive.button_reply.id ||
+              '';
           }
-          // List reply (if used)
+          // List reply
           else if (msg.interactive.list_reply) {
-            messageBody = msg.interactive.list_reply.title || '';
+            messageBody =
+              msg.interactive.list_reply.title ||
+              msg.interactive.list_reply.description ||
+              msg.interactive.list_reply.id ||
+              '';
           }
         }
+        // 3. Button message (some older API versions)
+        else if (msg.type === 'button' && msg.button) {
+          messageBody = msg.button.payload || msg.button.text || '';
+        }
+        // 4. Fallback: try to find any text or payload
+        if (!messageBody) {
+          messageBody = msg.text?.body || msg.payload || msg.title || '';
+        }
+
+        console.log('Extracted messageBody:', messageBody);
 
         const mediaUrl = msg.image?.link || msg.document?.link || msg.audio?.link || msg.video?.link || null;
         const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
