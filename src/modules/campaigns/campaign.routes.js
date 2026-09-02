@@ -10,11 +10,18 @@ const WhatsAppMessage = require('./message.model'); // import at top
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ─── Get messages for a campaign (optionally by recipientId) ───────
 router.get(
   '/:campaignId/messages',
   auth,
   asyncHandler(async (req, res) => {
+    // ─── Log incoming request ──────────────────────────────
+    console.log('\n===== 📥 FETCH MESSAGES REQUEST =====');
+    console.log('Method:', req.method);
+    console.log('URL:', req.originalUrl);
+    console.log('Campaign ID:', req.params.campaignId);
+    console.log('Recipient ID:', req.query.recipientId || 'all');
+    console.log('=====================================\n');
+
     const { campaignId } = req.params;
     const { recipientId } = req.query;
 
@@ -22,6 +29,14 @@ router.get(
     if (recipientId) filter.recipientId = recipientId;
 
     const messages = await WhatsAppMessage.find(filter).sort({ timestamp: 1 });
+
+    // ─── Log response details ──────────────────────────────
+    console.log('\n===== 📤 FETCH MESSAGES RESPONSE =====');
+    console.log('Status: 200 (success)');
+    console.log('Messages returned:', messages.length);
+    console.log('Data:', JSON.stringify(messages, null, 2));
+    console.log('======================================\n');
+
     res.json({ success: true, data: messages });
   })
 );
