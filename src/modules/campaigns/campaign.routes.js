@@ -14,25 +14,27 @@ router.get(
   '/:campaignId/messages',
   auth,
   asyncHandler(async (req, res) => {
-    // ─── Log incoming request ──────────────────────────────
+    const { campaignId } = req.params;
+    const { phone, recipientId } = req.query;
+
     console.log('\n===== 📥 FETCH MESSAGES REQUEST =====');
-    console.log('Method:', req.method);
-    console.log('URL:', req.originalUrl);
-    console.log('Campaign ID:', req.params.campaignId);
-    console.log('Recipient ID:', req.query.recipientId || 'all');
+    console.log('Campaign ID:', campaignId);
+    console.log('Phone:', phone || 'not provided');
+    console.log('Recipient ID:', recipientId || 'not provided');
     console.log('=====================================\n');
 
-    const { campaignId } = req.params;
-    const { recipientId } = req.query;
-
     const filter = { campaignId };
-    if (recipientId) filter.recipientId = recipientId;
+
+    // Prefer phone if provided, fallback to recipientId
+    if (phone) {
+      filter.phone = phone;
+    } else if (recipientId) {
+      filter.recipientId = recipientId;
+    }
 
     const messages = await WhatsAppMessage.find(filter).sort({ timestamp: 1 });
 
-    // ─── Log response details ──────────────────────────────
     console.log('\n===== 📤 FETCH MESSAGES RESPONSE =====');
-    console.log('Status: 200 (success)');
     console.log('Messages returned:', messages.length);
     console.log('Data:', JSON.stringify(messages, null, 2));
     console.log('======================================\n');
@@ -40,7 +42,6 @@ router.get(
     res.json({ success: true, data: messages });
   })
 );
-
 // ─── Existing routes ────────────────────────────────────────────────
 router.delete('/:campaignId/scan-history/:scanId', auth, ctrl.deleteScanHistory);
 router.put('/:campaignId/rename', auth, ctrl.rename);
