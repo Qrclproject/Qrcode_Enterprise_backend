@@ -29,6 +29,30 @@ const getCredentials = async (userId) => {
     accessToken: config.whatsapp.accessToken,
   };
 };
+const sendTextMessage = async (to, text, userId = null) => {
+  const creds = await getCredentials(userId);
+  const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${creds.phoneNumberId}/messages`;
+
+  const body = {
+    messaging_product: 'whatsapp',
+    to,               // phone in digits only, e.g., "2349133281741"
+    type: 'text',
+    text: { body: text },
+  };
+
+  try {
+    const { data } = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${creds.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    return data;
+  } catch (err) {
+    throw new ApiError(400, err.response?.data?.error?.message || err.message);
+  }
+};
 
 // ─── Send a template message (optionally with a specific user) ────
 const sendTemplateMessage = async (to, templateName, components = [], userId = null) => {
@@ -175,5 +199,5 @@ module.exports = {
   sendTemplateMessage,
   sendTestMessage,
   getCredentials,
-  checkNumbers,
+  checkNumbers,sendTextMessage,
 };
