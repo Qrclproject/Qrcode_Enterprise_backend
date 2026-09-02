@@ -1,5 +1,6 @@
 const config = require('../../config');
 const Campaign = require('../campaigns/campaign.model');
+const WhatsAppMessage = require('../campaigns/message.model');
 
 // GET: verify webhook
 const verifyWebhook = (req, res) => {
@@ -23,20 +24,61 @@ const handleWebhookEvent = async (req, res) => {
 
   const { messages, statuses } = changes;
 
-  // Process message status updates (delivered, read, failed)
+  // 1. Process incoming messages
+  if (messages && messages.length > 0) {
+    for (const msg of messages) {
+      try {
+        const phone = msg.from; // includes '+' sign
+        const normalizedPhone = phone.replace(/\D/g, ''); // remove non-digits
+
+        // Find campaign containing this phone number
+        const campaign = await Campaign.findOne({ 'recipients.phone': normalizedPhone });
+        if (!campaign) continue;
+
+        const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
+        if (!recipient) continue;
+
+        // Extract message content
+        const messageBody = msg.text?.body || '';
+        const mediaUrl = msg.image?.link || msg.document?.link || msg.audio?.link || msg.video?.link || null;
+        const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
+
+        // Save incoming message
+        await WhatsAppMessage.create({
+          campaignId: campaign._id,
+          recipientId: recipient._id,
+          phone: normalizedPhone,
+          direction: 'incoming',
+          body: messageBody,
+          mediaUrl,
+          whatsappMessageId: msg.id,
+          timestamp,
+        });
+      } catch (err) {
+        console.error('Failed to store incoming WhatsApp message:', err.message);
+      }
+    }
+  }
+
+  // 2. Process message status updates (delivered, read, failed)
   if (statuses) {
     for (const status of statuses) {
-      const { id: messageId, recipient_id: phone, status: deliveryStatus } = status;
-      const campaign = await Campaign.findOne({ 'recipients.phone': phone, status: 'sending' });
-      if (campaign) {
-        const recipient = campaign.recipients.find((r) => r.phone === phone);
-        if (recipient && deliveryStatus === 'failed') {
-          recipient.status = 'failed';
-          recipient.failureReason = 'WhatsApp delivery failed';
-          campaign.failed += 1;
-          campaign.delivered -= 1; // adjust if previously counted
-          await campaign.save();
+      try {
+        const { id: messageId, recipient_id: phone, status: deliveryStatus } = status;
+        const normalizedPhone = phone.replace(/\D/g, '');
+        const campaign = await Campaign.findOne({ 'recipients.phone': normalizedPhone, status: 'sending' });
+        if (campaign) {
+          const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
+          if (recipient && deliveryStatus === 'failed') {
+            recipient.status = 'failed';
+            recipient.failureReason = 'WhatsApp delivery failed';
+            campaign.failed += 1;
+            campaign.delivered -= 1; // adjust if previously counted
+            await campaign.save();
+          }
         }
+      } catch (err) {
+        console.error('Failed to process message status:', err.message);
       }
     }
   }

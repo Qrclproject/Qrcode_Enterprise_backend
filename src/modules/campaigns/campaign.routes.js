@@ -5,10 +5,28 @@ const ctrl = require('./campaign.controller');
 const validate = require('../../middleware/validate');
 const { createCampaignSchema, launchCampaignSchema, retryFailedSchema } = require('./campaign.validation');
 const auth = require('../../middleware/auth');
+const asyncHandler = require('../../utils/asyncHandler'); // 👈 Add this import
+const WhatsAppMessage = require('./message.model'); // import at top
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Add route in campaign.routes.js
+// ─── Get messages for a campaign (optionally by recipientId) ───────
+router.get(
+  '/:campaignId/messages',
+  auth,
+  asyncHandler(async (req, res) => {
+    const { campaignId } = req.params;
+    const { recipientId } = req.query;
+
+    const filter = { campaignId };
+    if (recipientId) filter.recipientId = recipientId;
+
+    const messages = await WhatsAppMessage.find(filter).sort({ timestamp: 1 });
+    res.json({ success: true, data: messages });
+  })
+);
+
+// ─── Existing routes ────────────────────────────────────────────────
 router.delete('/:campaignId/scan-history/:scanId', auth, ctrl.deleteScanHistory);
 router.put('/:campaignId/rename', auth, ctrl.rename);
 router.post('/', auth, validate(createCampaignSchema), ctrl.create);

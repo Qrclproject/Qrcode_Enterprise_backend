@@ -10,6 +10,7 @@ const mongoose = require('mongoose');
 const { decrypt } = require('../../utils/encryption');
 const minioService = require('../../services/minio.service');
 const { deleteResources } = require('../../utils/minioCleanup');
+const WhatsAppMessage = require('./message.model');
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
@@ -45,16 +46,18 @@ const validateTemplateId = (templateId) => {
   return true;
 };
 
+// Normalize phone: remove non-digits, remove leading '0', ensure country code 234, no '+'
 const normalizePhone = (phone) => {
   if (!phone) return '';
   let cleaned = String(phone).replace(/[^\d]/g, '');
   if (cleaned.startsWith('0')) {
     cleaned = '234' + cleaned.slice(1);
   }
-  if (!cleaned.startsWith('+')) {
-    cleaned = '+' + cleaned;
+  // If it doesn't start with 234, assume it's local and add 234
+  if (!cleaned.startsWith('234')) {
+    cleaned = '234' + cleaned;
   }
-  return cleaned;
+  return cleaned; // No '+' sign
 };
 
 // ─── Create campaign ─────────────────────────────────────────────────
@@ -169,7 +172,19 @@ const launchCampaign = async (campaignId) => {
         parameters: bodyParams,
       });
 
-      await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
+      // Send and capture response
+      const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
+
+      // Save outgoing message record
+      await WhatsAppMessage.create({
+        campaignId: campaign._id,
+        recipientId: recipient._id,
+        phone: recipient.phone,
+        direction: 'outgoing',
+        body: 'Template message sent', // You might want to store actual content
+        whatsappMessageId: response.messages?.[0]?.id,
+        timestamp: new Date(),
+      });
 
       recipient.status = 'sent';
       campaign.delivered += 1;
@@ -262,7 +277,17 @@ const retryFailedRecipients = async (campaignId) => {
         parameters: bodyParams,
       });
 
-      await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
+      const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
+
+      await WhatsAppMessage.create({
+        campaignId: campaign._id,
+        recipientId: recipient._id,
+        phone: recipient.phone,
+        direction: 'outgoing',
+        body: 'Template message sent',
+        whatsappMessageId: response.messages?.[0]?.id,
+        timestamp: new Date(),
+      });
 
       recipient.status = 'sent';
       recipient.failureReason = undefined;
@@ -538,7 +563,20 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
     parameters: bodyParams,
   });
 
-  await sendTemplateMessage(phone, templateName, components, campaign.userId);
+  const response = await sendTemplateMessage(phone, templateName, components, campaign.userId);
+
+  // Save outgoing message
+  if (existingRecipient) {
+    await WhatsAppMessage.create({
+      campaignId: campaign._id,
+      recipientId: existingRecipient._id,
+      phone: existingRecipient.phone,
+      direction: 'outgoing',
+      body: 'Manual template message sent',
+      whatsappMessageId: response.messages?.[0]?.id,
+      timestamp: new Date(),
+    });
+  }
 
   return { success: true, phone, templateName };
 };
@@ -708,7 +746,17 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
         parameters: bodyParams,
       });
 
-      await sendTemplateMessage(recipient.phone, template.whatsappTemplateName || 'event_qr_delivery', components, campaign.userId);
+      const response = await sendTemplateMessage(recipient.phone, template.whatsappTemplateName || 'event_qr_delivery', components, campaign.userId);
+
+      await WhatsAppMessage.create({
+        campaignId: campaign._id,
+        recipientId: recipient._id,
+        phone: recipient.phone,
+        direction: 'outgoing',
+        body: 'Template message sent',
+        whatsappMessageId: response.messages?.[0]?.id,
+        timestamp: new Date(),
+      });
 
       recipient.status = 'sent';
       campaign.delivered += 1;
