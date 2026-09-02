@@ -53,11 +53,25 @@ const normalizePhone = (phone) => {
   if (cleaned.startsWith('0')) {
     cleaned = '234' + cleaned.slice(1);
   }
-  // If it doesn't start with 234, assume it's local and add 234
   if (!cleaned.startsWith('234')) {
     cleaned = '234' + cleaned;
   }
-  return cleaned; // No '+' sign
+  return cleaned;
+};
+
+// ─── Helper to add quick reply buttons if template has them ─────
+const addQuickReplyButtons = (components, template) => {
+  if (template.quickReplies && template.quickReplies.length > 0) {
+    components.push({
+      type: 'button',
+      sub_type: 'quick_reply',
+      index: 0,
+      parameters: template.quickReplies.map((reply) => ({
+        type: 'text',
+        text: reply,
+      })),
+    });
+  }
 };
 
 // ─── Create campaign ─────────────────────────────────────────────────
@@ -172,16 +186,17 @@ const launchCampaign = async (campaignId) => {
         parameters: bodyParams,
       });
 
-      // Send and capture response
+      // Add quick reply buttons if template has them
+      addQuickReplyButtons(components, template);
+
       const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
-      // Save outgoing message record
       await WhatsAppMessage.create({
         campaignId: campaign._id,
         recipientId: recipient._id,
         phone: recipient.phone,
         direction: 'outgoing',
-        body: 'Template message sent', // You might want to store actual content
+        body: 'Template message sent',
         whatsappMessageId: response.messages?.[0]?.id,
         timestamp: new Date(),
       });
@@ -276,6 +291,9 @@ const retryFailedRecipients = async (campaignId) => {
         type: 'body',
         parameters: bodyParams,
       });
+
+      // Add quick reply buttons
+      addQuickReplyButtons(components, template);
 
       const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
@@ -563,9 +581,11 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
     parameters: bodyParams,
   });
 
+  // Add quick reply buttons
+  addQuickReplyButtons(components, template);
+
   const response = await sendTemplateMessage(phone, templateName, components, campaign.userId);
 
-  // Save outgoing message
   if (existingRecipient) {
     await WhatsAppMessage.create({
       campaignId: campaign._id,
@@ -617,7 +637,6 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
   const added = updatedCampaign.recipients.slice(-normalizedRecipients.length);
   const recipientIds = added.map(r => r._id);
 
-  // Start background processing (do not await)
   processNewRecipients(campaignId, recipientIds, { generateQr, sendNow });
 
   return updatedCampaign;
@@ -745,6 +764,9 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
         type: 'body',
         parameters: bodyParams,
       });
+
+      // Add quick reply buttons
+      addQuickReplyButtons(components, template);
 
       const response = await sendTemplateMessage(recipient.phone, template.whatsappTemplateName || 'event_qr_delivery', components, campaign.userId);
 

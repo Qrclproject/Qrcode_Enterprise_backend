@@ -14,6 +14,10 @@ const templateSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    quickReplies: {
+  type: [String],
+  default: [],
+},
     category: {
       type: String,
       enum: ['delivery', 'reminder', 'thanks', 'custom', 'marketing'],

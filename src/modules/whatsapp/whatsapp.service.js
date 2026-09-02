@@ -29,7 +29,8 @@ const getCredentials = async (userId) => {
     accessToken: config.whatsapp.accessToken,
   };
 };
-// At the bottom, add the new function
+
+// ─── Send a free-form text message (reply to customer) ──────────
 const sendTextMessage = async (to, text, userId = null) => {
   const creds = await getCredentials(userId);
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
@@ -42,6 +43,12 @@ const sendTextMessage = async (to, text, userId = null) => {
     text: { body: text },
   };
 
+  // 🔍 Log request
+  console.log('\n===== WHATSAPP TEXT MESSAGE REQUEST =====');
+  console.log('URL:', url);
+  console.log('Body:', JSON.stringify(body, null, 2));
+  console.log('=========================================\n');
+
   try {
     const { data } = await axios.post(url, body, {
       headers: {
@@ -49,8 +56,25 @@ const sendTextMessage = async (to, text, userId = null) => {
         'Content-Type': 'application/json',
       },
     });
+
+    // ✅ Log response
+    console.log('\n===== WHATSAPP TEXT MESSAGE RESPONSE =====');
+    console.log('Status: 200 (success)');
+    console.log('Response:', JSON.stringify(data, null, 2));
+    console.log('==========================================\n');
+
+    if (data.error) {
+      throw new ApiError(400, data.error.message || 'WhatsApp API error');
+    }
     return data;
   } catch (err) {
+    // ❌ Log error response
+    console.error('\n===== WHATSAPP TEXT MESSAGE ERROR =====');
+    console.error('Status:', err.response?.status);
+    console.error('Data:', JSON.stringify(err.response?.data, null, 2));
+    console.error('======================================\n');
+
+    if (err instanceof ApiError) throw err;
     throw new ApiError(400, err.response?.data?.error?.message || err.message);
   }
 };
@@ -59,7 +83,7 @@ const sendTextMessage = async (to, text, userId = null) => {
 const sendTemplateMessage = async (to, templateName, components = [], userId = null) => {
   const creds = await getCredentials(userId);
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
-const url = `https://graph.facebook.com/${apiVersion}/${creds.phoneNumberId}/messages`;
+  const url = `https://graph.facebook.com/${apiVersion}/${creds.phoneNumberId}/messages`;
 
   const body = {
     messaging_product: 'whatsapp',
@@ -163,7 +187,6 @@ const checkNumbers = async (phones) => {
     while (queue.length > 0) {
       const phone = queue.shift();
       try {
-        // Assumes provider returns { exists: boolean } on GET /{phone}
         const { data } = await axios.get(`${baseUrl}/${encodeURIComponent(phone)}`, {
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -174,7 +197,6 @@ const checkNumbers = async (phones) => {
         const exists = data?.exists === true;
         results.push({ input: phone, status: exists ? 'valid' : 'invalid' });
       } catch (err) {
-        // If individual check fails, mark as invalid and include error
         results.push({
           input: phone,
           status: 'invalid',
@@ -184,13 +206,11 @@ const checkNumbers = async (phones) => {
     }
   };
 
-  // Start workers
   const workers = Array(Math.min(concurrency, phones.length))
     .fill(null)
     .map(() => worker());
   await Promise.all(workers);
 
-  // Restore original order for easier frontend display
   const resultMap = new Map(results.map(r => [r.input, r]));
   return phones.map(phone => resultMap.get(phone) || { input: phone, status: 'invalid' });
 };
@@ -198,7 +218,8 @@ const checkNumbers = async (phones) => {
 // ─── Exports ──────────────────────────────────────────────────────
 module.exports = {
   sendTemplateMessage,
+  sendTextMessage,
   sendTestMessage,
   getCredentials,
-  checkNumbers,sendTextMessage,
+  checkNumbers,
 };
