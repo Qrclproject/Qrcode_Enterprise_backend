@@ -20,19 +20,53 @@ const getMediaUrl = async (mediaId, accessToken) => {
 };
 
 // Helper: download media and upload to MinIO (permanent URL)
-const downloadAndUploadMedia = async (mediaUrl, mediaType) => {
+const downloadAndUploadMedia = async (mediaUrl) => {
+  // Step 1: Download from WhatsApp
+  let buffer;
+  let contentType;
   try {
-    const response = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
-    const buffer = Buffer.from(response.data, 'binary');
-    const contentType = response.headers['content-type'] || 'application/octet-stream';
+    console.log(`Downloading media from: ${mediaUrl}`);
+    const response = await axios.get(mediaUrl, {
+      responseType: 'arraybuffer',
+    });
+    buffer = Buffer.from(response.data, 'binary');
+    contentType = response.headers['content-type'] || 'application/octet-stream';
+    console.log('✅ Media downloaded successfully, content type:', contentType);
+  } catch (downloadErr) {
+    console.error('❌ Failed to download media:', downloadErr.message);
+    // If 401, retry with Authorization header
+    if (downloadErr.response?.status === 401) {
+      console.log('Retrying download with Authorization header...');
+      try {
+        const retryResponse = await axios.get(mediaUrl, {
+          responseType: 'arraybuffer',
+          headers: {
+            Authorization: `Bearer ${config.whatsapp.accessToken}`,
+          },
+        });
+        buffer = Buffer.from(retryResponse.data, 'binary');
+        contentType = retryResponse.headers['content-type'] || 'application/octet-stream';
+        console.log('✅ Media downloaded with auth header');
+      } catch (retryErr) {
+        console.error('❌ Retry failed:', retryErr.message);
+        return mediaUrl; // fallback to temporary URL
+      }
+    } else {
+      return mediaUrl; // fallback
+    }
+  }
+
+  // Step 2: Upload to MinIO
+  try {
     const extension = contentType.split('/')[1] || 'bin';
     const objectName = `whatsapp_media/${Date.now()}_${Math.random().toString(36).substr(2, 6)}.${extension}`;
-
+    console.log(`Uploading to MinIO as: ${objectName}`);
     const minioUrl = await minioService.uploadBuffer(objectName, buffer, { 'Content-Type': contentType });
+    console.log('✅ Uploaded to MinIO:', minioUrl);
     return minioUrl;
-  } catch (err) {
-    console.error('Failed to download/upload media:', err.message);
-    return mediaUrl; // fallback to original temporary URL
+  } catch (uploadErr) {
+    console.error('❌ Failed to upload to MinIO:', uploadErr.message);
+    return mediaUrl; // fallback
   }
 };
 
@@ -119,11 +153,13 @@ const handleWebhookEvent = async (req, res) => {
           mediaUrl = await getMediaUrl(msg.video.id, config.whatsapp.accessToken);
         }
 
-        // If media URL exists, store permanently in MinIO
+        // If media URL exists, attempt to store permanently in MinIO
         if (mediaUrl) {
           console.log('Original media URL:', mediaUrl);
           mediaUrl = await downloadAndUploadMedia(mediaUrl);
-          console.log('Permanent media URL:', mediaUrl);
+          console.log('Stored media URL:', mediaUrl);
+        } else {
+          console.log('No media URL found for this message');
         }
 
         const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
