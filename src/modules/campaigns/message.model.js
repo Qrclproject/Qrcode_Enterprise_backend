@@ -12,6 +12,11 @@ const messageSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       index: true,
     },
+     status: {
+    type: String,
+    enum: ['sent', 'failed', 'pending'],
+    default: 'sent',
+  },
     phone: {
       type: String,
       required: true,

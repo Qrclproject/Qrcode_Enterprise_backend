@@ -5,32 +5,33 @@ const ctrl = require('./campaign.controller');
 const validate = require('../../middleware/validate');
 const { createCampaignSchema, launchCampaignSchema, retryFailedSchema } = require('./campaign.validation');
 const auth = require('../../middleware/auth');
-const asyncHandler = require('../../utils/asyncHandler'); // 👈 Add this import
-const WhatsAppMessage = require('./message.model'); // import at top
+const asyncHandler = require('../../utils/asyncHandler');
+const WhatsAppMessage = require('./message.model');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ─── Fetch messages with filters (phone, recipientId, direction, status) ──
 router.get(
   '/:campaignId/messages',
   auth,
   asyncHandler(async (req, res) => {
     const { campaignId } = req.params;
-    const { phone, recipientId } = req.query;
+    const { phone, recipientId, direction, status } = req.query;
 
     console.log('\n===== 📥 FETCH MESSAGES REQUEST =====');
     console.log('Campaign ID:', campaignId);
     console.log('Phone:', phone || 'not provided');
     console.log('Recipient ID:', recipientId || 'not provided');
+    console.log('Direction:', direction || 'all');
+    console.log('Status:', status || 'all');
     console.log('=====================================\n');
 
     const filter = { campaignId };
 
-    // Prefer phone if provided, fallback to recipientId
-    if (phone) {
-      filter.phone = phone;
-    } else if (recipientId) {
-      filter.recipientId = recipientId;
-    }
+    if (phone) filter.phone = phone;
+    else if (recipientId) filter.recipientId = recipientId;
+    if (direction) filter.direction = direction;
+    if (status) filter.status = status;
 
     const messages = await WhatsAppMessage.find(filter).sort({ timestamp: 1 });
 
@@ -42,7 +43,8 @@ router.get(
     res.json({ success: true, data: messages });
   })
 );
-// ─── Existing routes ────────────────────────────────────────────────
+
+// ─── Existing routes (unchanged) ─────────────────────────────────
 router.delete('/:campaignId/scan-history/:scanId', auth, ctrl.deleteScanHistory);
 router.put('/:campaignId/rename', auth, ctrl.rename);
 router.post('/', auth, validate(createCampaignSchema), ctrl.create);
@@ -68,13 +70,13 @@ router.put('/:campaignId/header-image', auth, ctrl.updateHeaderImage);
 // Check‑in
 router.post('/:campaignId/check-in', auth, ctrl.checkIn);
 
-// Add recipients (if needed)
+// Add recipients
 router.post('/:campaignId/recipients', auth, ctrl.addRecipients);
 
-// ✅ Get progress of add-recipients process
+// Get progress of add-recipients process
 router.get('/:campaignId/add-recipients-progress', auth, ctrl.getAddRecipientsProgress);
 
-// ✅ Reset check‑in for a specific recipient
+// Reset check‑in for a specific recipient
 router.post('/:campaignId/recipients/:recipientId/reset-checkin', auth, ctrl.resetRecipientCheckIn);
 
 // Send manual message

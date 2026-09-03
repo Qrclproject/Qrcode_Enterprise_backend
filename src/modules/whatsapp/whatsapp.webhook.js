@@ -52,44 +52,25 @@ const handleWebhookEvent = async (req, res) => {
         const normalizedPhone = phone.replace(/\D/g, '');
         console.log(`📱 Normalized phone: ${normalizedPhone}`);
 
-        // 🔍 Find ALL campaigns that contain this phone number
         const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone });
         if (!campaigns || campaigns.length === 0) {
           console.log(`❌ No campaign found for phone ${normalizedPhone}`);
           continue;
         }
 
-        // --- Robust extraction of message body ---
+        // Robust extraction of message body
         let messageBody = '';
-
-        // 1. Text message
         if (msg.type === 'text' && msg.text) {
           messageBody = msg.text.body || '';
-        }
-        // 2. Interactive message (quick reply / list reply)
-        else if (msg.type === 'interactive' && msg.interactive) {
-          // Quick reply button
+        } else if (msg.type === 'interactive' && msg.interactive) {
           if (msg.interactive.button_reply) {
-            messageBody =
-              msg.interactive.button_reply.title ||
-              msg.interactive.button_reply.payload ||
-              msg.interactive.button_reply.id ||
-              '';
+            messageBody = msg.interactive.button_reply.title || msg.interactive.button_reply.payload || msg.interactive.button_reply.id || '';
+          } else if (msg.interactive.list_reply) {
+            messageBody = msg.interactive.list_reply.title || msg.interactive.list_reply.description || msg.interactive.list_reply.id || '';
           }
-          // List reply
-          else if (msg.interactive.list_reply) {
-            messageBody =
-              msg.interactive.list_reply.title ||
-              msg.interactive.list_reply.description ||
-              msg.interactive.list_reply.id ||
-              '';
-          }
-        }
-        // 3. Button message (some older API versions)
-        else if (msg.type === 'button' && msg.button) {
+        } else if (msg.type === 'button' && msg.button) {
           messageBody = msg.button.payload || msg.button.text || '';
         }
-        // 4. Fallback: try to find any text or payload
         if (!messageBody) {
           messageBody = msg.text?.body || msg.payload || msg.title || '';
         }
@@ -99,7 +80,6 @@ const handleWebhookEvent = async (req, res) => {
         const mediaUrl = msg.image?.link || msg.document?.link || msg.audio?.link || msg.video?.link || null;
         const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
-        // Save incoming message in each campaign that contains this recipient
         for (const campaign of campaigns) {
           const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
           if (!recipient) continue;
@@ -115,6 +95,7 @@ const handleWebhookEvent = async (req, res) => {
             mediaUrl,
             whatsappMessageId: msg.id,
             timestamp,
+            status: 'sent',           // incoming messages are considered received successfully
           });
         }
       } catch (err) {
@@ -133,6 +114,20 @@ const handleWebhookEvent = async (req, res) => {
         const { id: messageId, recipient_id: phone, status: deliveryStatus } = status;
         const normalizedPhone = phone.replace(/\D/g, '');
         console.log(`Normalized phone: ${normalizedPhone}, Delivery status: ${deliveryStatus}`);
+
+        // Update WhatsAppMessage status if failed
+        if (deliveryStatus === 'failed') {
+          const updatedMsg = await WhatsAppMessage.findOneAndUpdate(
+            { whatsappMessageId: messageId },
+            { status: 'failed' },
+            { new: true }
+          );
+          if (updatedMsg) {
+            console.log(`❌ WhatsAppMessage ${messageId} marked as failed.`);
+          } else {
+            console.log(`⚠️ No WhatsAppMessage found for ID ${messageId}`);
+          }
+        }
 
         // Find all campaigns with this recipient and status 'sending'
         const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone, status: 'sending' });
