@@ -2,9 +2,9 @@ const axios = require('axios');
 const config = require('../../config');
 const Campaign = require('../campaigns/campaign.model');
 const WhatsAppMessage = require('../campaigns/message.model');
-const minioService = require('../../services/minio.service');   // 👈 add import
+const minioService = require('../../services/minio.service');
 
-// Helper to fetch media URL from WhatsApp Graph API
+// Helper: retrieve media URL from WhatsApp Graph API
 const getMediaUrl = async (mediaId, accessToken) => {
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
   const url = `https://graph.facebook.com/${apiVersion}/${mediaId}`;
@@ -19,7 +19,7 @@ const getMediaUrl = async (mediaId, accessToken) => {
   }
 };
 
-// Download media from URL and upload to MinIO, return permanent URL
+// Helper: download media and upload to MinIO (permanent URL)
 const downloadAndUploadMedia = async (mediaUrl, mediaType) => {
   try {
     const response = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
@@ -92,7 +92,7 @@ const handleWebhookEvent = async (req, res) => {
           continue;
         }
 
-        // Robust extraction of message body
+        // Extract message body
         let messageBody = '';
         if (msg.type === 'text' && msg.text) {
           messageBody = msg.text.body || '';
@@ -107,29 +107,22 @@ const handleWebhookEvent = async (req, res) => {
         }
         if (!messageBody) messageBody = '';
 
-        console.log('Extracted messageBody:', messageBody);
-
-        // Determine media type and retrieve media URL
+        // Determine media type and retrieve temporary URL
         let mediaUrl = '';
-        let mediaType = '';
         if (msg.image && msg.image.id) {
-          mediaType = 'image';
           mediaUrl = await getMediaUrl(msg.image.id, config.whatsapp.accessToken);
         } else if (msg.document && msg.document.id) {
-          mediaType = 'document';
           mediaUrl = await getMediaUrl(msg.document.id, config.whatsapp.accessToken);
         } else if (msg.audio && msg.audio.id) {
-          mediaType = 'audio';
           mediaUrl = await getMediaUrl(msg.audio.id, config.whatsapp.accessToken);
         } else if (msg.video && msg.video.id) {
-          mediaType = 'video';
           mediaUrl = await getMediaUrl(msg.video.id, config.whatsapp.accessToken);
         }
 
-        // If media URL exists, download and store permanently in MinIO
+        // If media URL exists, store permanently in MinIO
         if (mediaUrl) {
           console.log('Original media URL:', mediaUrl);
-          mediaUrl = await downloadAndUploadMedia(mediaUrl, mediaType);
+          mediaUrl = await downloadAndUploadMedia(mediaUrl);
           console.log('Permanent media URL:', mediaUrl);
         }
 
