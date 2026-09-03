@@ -4,7 +4,7 @@ const Campaign = require('../campaigns/campaign.model');
 const WhatsAppMessage = require('../campaigns/message.model');
 const minioService = require('../../services/minio.service');
 
-// Helper: retrieve media URL from WhatsApp Graph API
+// Helper: get temporary media URL from WhatsApp
 const getMediaUrl = async (mediaId, accessToken) => {
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v25.0';
   const url = `https://graph.facebook.com/${apiVersion}/${mediaId}`;
@@ -19,58 +19,42 @@ const getMediaUrl = async (mediaId, accessToken) => {
   }
 };
 
-// Helper: download media and upload to MinIO (permanent URL)
+// Helper: download from temporary URL and upload to MinIO
 const downloadAndUploadMedia = async (mediaUrl) => {
-  // Step 1: Download from WhatsApp
-  let buffer;
-  let contentType;
+  if (!mediaUrl) return '';
   try {
+    // Step 1: download with access token (sometimes needed)
     console.log(`Downloading media from: ${mediaUrl}`);
-    const response = await axios.get(mediaUrl, {
-      responseType: 'arraybuffer',
-    });
-    buffer = Buffer.from(response.data, 'binary');
-    contentType = response.headers['content-type'] || 'application/octet-stream';
-    console.log('✅ Media downloaded successfully, content type:', contentType);
-  } catch (downloadErr) {
-    console.error('❌ Failed to download media:', downloadErr.message);
-    // If 401, retry with Authorization header
-    if (downloadErr.response?.status === 401) {
-      console.log('Retrying download with Authorization header...');
-      try {
-        const retryResponse = await axios.get(mediaUrl, {
-          responseType: 'arraybuffer',
-          headers: {
-            Authorization: `Bearer ${config.whatsapp.accessToken}`,
-          },
-        });
-        buffer = Buffer.from(retryResponse.data, 'binary');
-        contentType = retryResponse.headers['content-type'] || 'application/octet-stream';
-        console.log('✅ Media downloaded with auth header');
-      } catch (retryErr) {
-        console.error('❌ Retry failed:', retryErr.message);
-        return mediaUrl; // fallback to temporary URL
-      }
-    } else {
-      return mediaUrl; // fallback
+    let response;
+    try {
+      response = await axios.get(mediaUrl, {
+        responseType: 'arraybuffer',
+        headers: { Authorization: `Bearer ${config.whatsapp.accessToken}` },
+      });
+    } catch (firstErr) {
+      console.warn('Download with auth failed, trying without auth...');
+      response = await axios.get(mediaUrl, {
+        responseType: 'arraybuffer',
+      });
     }
-  }
 
-  // Step 2: Upload to MinIO
-  try {
+    const buffer = Buffer.from(response.data, 'binary');
+    const contentType = response.headers['content-type'] || 'application/octet-stream';
     const extension = contentType.split('/')[1] || 'bin';
     const objectName = `whatsapp_media/${Date.now()}_${Math.random().toString(36).substr(2, 6)}.${extension}`;
+
+    // Step 2: upload to MinIO
     console.log(`Uploading to MinIO as: ${objectName}`);
     const minioUrl = await minioService.uploadBuffer(objectName, buffer, { 'Content-Type': contentType });
-    console.log('✅ Uploaded to MinIO:', minioUrl);
+    console.log(`✅ Uploaded to MinIO: ${minioUrl}`);
     return minioUrl;
-  } catch (uploadErr) {
-    console.error('❌ Failed to upload to MinIO:', uploadErr.message);
-    return mediaUrl; // fallback
+  } catch (err) {
+    console.error('❌ Failed to download/upload media:', err.message);
+    return mediaUrl; // fallback to temporary URL (will expire)
   }
 };
 
-// GET: verify webhook
+// GET: verify webhook (unchanged)
 const verifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -153,13 +137,11 @@ const handleWebhookEvent = async (req, res) => {
           mediaUrl = await getMediaUrl(msg.video.id, config.whatsapp.accessToken);
         }
 
-        // If media URL exists, attempt to store permanently in MinIO
+        // Download and upload to MinIO for permanence
         if (mediaUrl) {
-          console.log('Original media URL:', mediaUrl);
+          console.log('Original temporary URL:', mediaUrl);
           mediaUrl = await downloadAndUploadMedia(mediaUrl);
-          console.log('Stored media URL:', mediaUrl);
-        } else {
-          console.log('No media URL found for this message');
+          console.log('Final media URL:', mediaUrl);
         }
 
         const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
@@ -189,7 +171,7 @@ const handleWebhookEvent = async (req, res) => {
     }
   }
 
-  // 2. Process message status updates (delivered, read, failed)
+  // 2. Process message status updates (unchanged)
   if (statuses && statuses.length > 0) {
     console.log('\n--- Processing Status Updates ---');
     for (const status of statuses) {
@@ -199,7 +181,6 @@ const handleWebhookEvent = async (req, res) => {
         const normalizedPhone = phone.replace(/\D/g, '');
         console.log(`Normalized phone: ${normalizedPhone}, Delivery status: ${deliveryStatus}`);
 
-        // Update WhatsAppMessage status if failed
         if (deliveryStatus === 'failed') {
           let failureReason = '';
           if (errors && errors.length > 0) {
@@ -223,7 +204,6 @@ const handleWebhookEvent = async (req, res) => {
           }
         }
 
-        // Find all campaigns with this recipient and status 'sending'
         const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone, status: 'sending' });
         for (const campaign of campaigns) {
           const recipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
