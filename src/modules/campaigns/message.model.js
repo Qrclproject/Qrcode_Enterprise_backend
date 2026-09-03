@@ -17,6 +17,10 @@ const messageSchema = new mongoose.Schema(
     enum: ['sent', 'failed', 'pending'],
     default: 'sent',
   },
+  failureReason: {
+  type: String,
+  default: '',
+},
     phone: {
       type: String,
       required: true,

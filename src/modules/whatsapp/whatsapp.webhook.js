@@ -95,7 +95,7 @@ const handleWebhookEvent = async (req, res) => {
             mediaUrl,
             whatsappMessageId: msg.id,
             timestamp,
-            status: 'sent',           // incoming messages are considered received successfully
+            status: 'sent',
           });
         }
       } catch (err) {
@@ -111,19 +111,30 @@ const handleWebhookEvent = async (req, res) => {
     for (const status of statuses) {
       try {
         console.log('Status:', JSON.stringify(status, null, 2));
-        const { id: messageId, recipient_id: phone, status: deliveryStatus } = status;
+        const { id: messageId, recipient_id: phone, status: deliveryStatus, errors } = status;
         const normalizedPhone = phone.replace(/\D/g, '');
         console.log(`Normalized phone: ${normalizedPhone}, Delivery status: ${deliveryStatus}`);
 
         // Update WhatsAppMessage status if failed
         if (deliveryStatus === 'failed') {
+          // Extract failure reason
+          let failureReason = '';
+          if (errors && errors.length > 0) {
+            const err = errors[0];
+            failureReason = err.error_data?.details || err.message || err.title || 'Unknown error';
+          } else {
+            failureReason = 'WhatsApp delivery failed';
+          }
+
+          console.log(`Failure reason: ${failureReason}`);
+
           const updatedMsg = await WhatsAppMessage.findOneAndUpdate(
             { whatsappMessageId: messageId },
-            { status: 'failed' },
+            { status: 'failed', failureReason },
             { new: true }
           );
           if (updatedMsg) {
-            console.log(`❌ WhatsAppMessage ${messageId} marked as failed.`);
+            console.log(`❌ WhatsAppMessage ${messageId} marked as failed with reason: ${failureReason}`);
           } else {
             console.log(`⚠️ No WhatsAppMessage found for ID ${messageId}`);
           }
