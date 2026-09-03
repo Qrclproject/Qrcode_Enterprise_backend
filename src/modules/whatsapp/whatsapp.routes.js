@@ -6,15 +6,20 @@ const {
   sendTestMessage,
   getCredentials,
   sendTextMessage,
-  checkNumbers,   // 👈 import
+  sendImageMessage,   // 👈 new import
+  checkNumbers,
 } = require('./whatsapp.service');
 const auth = require('../../middleware/auth');
 const asyncHandler = require('../../utils/asyncHandler');
+const ApiError = require('../../utils/apiError');
 const Campaign = require('../campaigns/campaign.model');
 const WhatsAppMessage = require('../campaigns/message.model');
+
 // Webhook – no auth (called by Meta)
 router.get('/webhook', verifyWebhook);
 router.post('/webhook', handleWebhookEvent);
+
+// Send text message (reply)
 router.post('/send-text', auth, asyncHandler(async (req, res) => {
   const { phone, text } = req.body;
   if (!phone || !text) throw new ApiError(400, 'Phone and text are required');
@@ -41,12 +46,42 @@ router.post('/send-text', auth, asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: result });
 }));
+
+// Send image message (reply) – 👈 NEW ROUTE
+router.post('/send-image', auth, asyncHandler(async (req, res) => {
+  const { phone, imageUrl, caption } = req.body;
+  if (!phone || !imageUrl) throw new ApiError(400, 'Phone and imageUrl are required');
+
+  const normalizedPhone = phone.replace(/\D/g, '');
+  const result = await sendImageMessage(normalizedPhone, imageUrl, caption || '');
+
+  // Save outgoing image message in all matching campaigns
+  const campaigns = await Campaign.find({ 'recipients.phone': normalizedPhone });
+  for (const campaign of campaigns) {
+    const recipient = campaign.recipients.find(r => r.phone === normalizedPhone);
+    if (recipient) {
+      await WhatsAppMessage.create({
+        campaignId: campaign._id,
+        recipientId: recipient._id,
+        phone: normalizedPhone,
+        direction: 'outgoing',
+        body: caption || '',
+        mediaUrl: imageUrl,   // store image URL
+        whatsappMessageId: result.messages?.[0]?.id,
+        timestamp: new Date(),
+      });
+    }
+  }
+
+  res.json({ success: true, data: result });
+}));
+
 // Health check – validates WhatsApp API credentials
 router.get('/health', async (req, res) => {
   try {
     const { phoneNumberId, accessToken } = await getCredentials();
 
-    const url = `https://graph.facebook.com/v22.0/${phoneNumberId}`;
+    const url = `https://graph.facebook.com/v25.0/${phoneNumberId}`;   // ✅ updated to v25.0
     const response = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -75,7 +110,7 @@ router.get('/health', async (req, res) => {
   }
 });
 
-// Check numbers – protected (uses third‑party validation now)
+// Check numbers – protected
 router.post('/check-numbers', auth, asyncHandler(async (req, res) => {
   const { phones } = req.body;
   if (!Array.isArray(phones) || phones.length === 0) {

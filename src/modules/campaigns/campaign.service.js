@@ -327,6 +327,39 @@ const deleteCampaign = async (campaignId) => {
 };
 
 // ─── Check‑in recipient (FULLY ATOMIC) ─────────────────────────────
+
+
+
+
+
+// ─── Delete scan history entry (requires passcode) ────────────────
+const deleteScanHistoryEntry = async (campaignId, scanId) => {
+  const campaign = await Campaign.findByIdAndUpdate(
+    campaignId,
+    { $pull: { scanHistory: { _id: scanId } } },
+    { new: true }
+  );
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+  return campaign;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ─── Check‑in recipient (FULLY ATOMIC) ─────────────────────────────
 const checkInRecipient = async (campaignId, qrData) => {
   let rawData;
   try {
@@ -687,16 +720,6 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
   );
 };
 
-// ─── Delete scan history entry (requires passcode) ────────────────
-const deleteScanHistoryEntry = async (campaignId, scanId) => {
-  const campaign = await Campaign.findByIdAndUpdate(
-    campaignId,
-    { $pull: { scanHistory: { _id: scanId } } },
-    { new: true }
-  );
-  if (!campaign) throw new ApiError(404, 'Campaign not found');
-  return campaign;
-};
 
 // ─── Send template messages to specific recipients ────────────────
 const sendCampaignToRecipients = async (campaignId, recipientIds) => {
@@ -766,8 +789,6 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
   await campaign.save();
   return campaign;
 };
-
-// ─── Exports ─────────────────────────────────────────────────────────
 module.exports = {
   createCampaign,
   launchCampaign,
@@ -783,5 +804,6 @@ module.exports = {
   sendManualMessage,
   addRecipientsToCampaign,
   sendCampaignToRecipients,
-  deleteScanHistoryEntry,  renameCampaign, 
+  renameCampaign,
+  deleteScanHistoryEntry,
 };
