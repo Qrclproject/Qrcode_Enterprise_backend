@@ -21,7 +21,7 @@ app.set('trust proxy', 1);
 // ─── CORS: allow both local dev and production frontend ──────────
 const allowedOrigins = [
   'http://localhost:5173',    
-  'https://qrcode-enterprise.vercel.app',      // production
+  'https://app.149.102.136.125.sslip.io',      // production
 ];
 
 app.use(cors({
