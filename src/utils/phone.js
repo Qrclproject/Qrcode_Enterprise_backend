@@ -1,8 +1,12 @@
 // src/utils/phone.js
 //
-// Phone-number normalization for the WhatsApp Cloud API.
-// The API only accepts digits (no '+', no spaces, no dashes), with the
+// Centralized phone normalization for the WhatsApp Cloud API.
+//
+// The API accepts digits only — no '+', no spaces, no dashes — with the
 // country calling code included and NO leading zero.
+//
+// The `enabled` flag lets the user turn country-code injection OFF.
+// When OFF, only non-digit characters are stripped; nothing else is added.
 
 const COUNTRY_CODES = {
   NG: '234', GH: '233', KE: '254', ZA: '27',  EG: '20',
@@ -10,7 +14,7 @@ const COUNTRY_CODES = {
   SN: '221', CM: '237', US: '1',   GB: '44',  FR: '33',
   DE: '49',  IT: '39',  ES: '34',  NL: '31',  AE: '971',
   SA: '966', IN: '91',  CN: '86',  JP: '81',  BR: '55',
-  AU: '61',
+  AU: '61',  CA: '1',
 };
 
 const COUNTRY_OPTIONS = [
@@ -42,6 +46,7 @@ const COUNTRY_OPTIONS = [
   { code: '61',  label: 'Australia (+61)' },
 ];
 
+// Longer prefixes first so "234" matches before "23" etc.
 const ALL_COUNTRY_CODES = [...new Set([
   ...Object.values(COUNTRY_CODES),
   ...COUNTRY_OPTIONS.map((o) => o.code),
@@ -50,46 +55,67 @@ const ALL_COUNTRY_CODES = [...new Set([
 /**
  * Normalize a phone number for WhatsApp delivery.
  *
- * @param {string} phone - Raw phone as submitted by the user
+ * @param {string} phone
  * @param {object} [options]
- * @param {boolean} [options.enabled=true]
- *   true  → full normalization (add country code, replace leading 0)
- *   false → strip separators only, leave the number as the user typed it
- * @param {string}  [options.countryCode='234']
- *   E.164 country calling code (no '+') to use for local numbers
+ * @param {boolean} [options.enabled=true]  false → strip non-digits only
+ * @param {string}  [options.countryCode='234']  E.164 code without '+'
  * @returns {string} Digits-only phone number
  */
 const normalizePhone = (phone, options = {}) => {
   const { enabled = true, countryCode = '234' } = options;
 
   if (phone === null || phone === undefined || phone === '') return '';
-
-  // Digits-only is required by the WhatsApp API regardless of the flag.
   const digits = String(phone).replace(/\D/g, '');
   if (!digits) return '';
 
-  // Toggle OFF — leave the submitted number untouched (minus separators).
+  // ── Toggle OFF: only strip separators, add nothing ────────────
   if (!enabled) return digits;
 
-  // Already has the target country code
+  // ── Toggle ON ────────────────────────────────────────────────
+  // 1) Already has the target country code
   if (digits.startsWith(countryCode)) return digits;
 
-  // Local format with a leading 0 → replace with country code
+  // 2) Local format with a leading 0 → replace with country code
   if (digits.startsWith('0')) return countryCode + digits.slice(1);
 
-  // Starts with a different known country code and is long enough to be
-  // a valid foreign number → leave it alone
-  const hasForeignPrefix = ALL_COUNTRY_CODES.some(
+  // 3) Starts with a *different* known country code and is long enough
+  //    to be a valid foreign number → leave it alone
+  const matchesForeign = ALL_COUNTRY_CODES.some(
     (cc) => cc !== countryCode && digits.startsWith(cc)
   );
-  if (hasForeignPrefix && digits.length >= 11) return digits;
+  if (matchesForeign && digits.length >= 11) return digits;
 
-  // Fallback: assume it's a local number missing its country code
+  // 4) Fallback: assume local number missing its country code
   return countryCode + digits;
+};
+
+/**
+ * Debug helper — returns a trace of what happened.
+ * Used by the /api/campaigns/debug/normalize-phone endpoint.
+ */
+const debugNormalizePhone = (phone, options = {}) => {
+  const { enabled = true, countryCode = '234' } = options;
+  const digits = String(phone ?? '').replace(/\D/g, '');
+  const matchesForeign = ALL_COUNTRY_CODES.find(
+    (cc) => cc !== countryCode && digits.startsWith(cc)
+  );
+  const output = normalizePhone(phone, options);
+
+  let reason = '';
+  if (!digits) reason = 'empty';
+  else if (!enabled) reason = 'toggle OFF — stripped non-digits only';
+  else if (digits.startsWith(countryCode)) reason = `already starts with ${countryCode}`;
+  else if (digits.startsWith('0')) reason = `replaced leading 0 with ${countryCode}`;
+  else if (matchesForeign && digits.length >= 11)
+    reason = `foreign prefix '${matchesForeign}' detected — left as-is`;
+  else reason = `prepended ${countryCode}`;
+
+  return { input: phone, options: { enabled, countryCode }, digits, output, reason };
 };
 
 module.exports = {
   normalizePhone,
+  debugNormalizePhone,
   COUNTRY_CODES,
   COUNTRY_OPTIONS,
   ALL_COUNTRY_CODES,
