@@ -20,6 +20,10 @@ const settingsSchema = new mongoose.Schema(
       readReceipts: { type: Boolean, default: true },
       deliveryDelay: { type: Number, default: 0 },
       retryAttempts: { type: Number, default: 3 },
+
+      // ✅ NEW: phone-number normalization defaults
+      autoAddCountryCode: { type: Boolean, default: true },
+      defaultCountryCode: { type: String, default: '234' },
     },
     notificationPrefs: {
       campaignCompleted: { type: Boolean, default: true },
