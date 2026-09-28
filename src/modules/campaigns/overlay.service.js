@@ -2,6 +2,7 @@
 const sharp = require('sharp');
 const axios = require('axios');
 const { renderStyledQR } = require('../../utils/styledQr');
+const { mapFont } = require('../../utils/fontMapper');
 
 // ─── Download helper ──────────────────────────────────────────────
 const downloadImage = async (url) => {
@@ -29,7 +30,11 @@ const renderTextToSvg = (text, style, width, height) => {
   const fontStyle      = style.italic ? 'italic' : 'normal';
   const textDecoration = style.underline ? 'underline' : 'none';
   const textAlign      = style.alignment || 'left';
-  const fontFamily     = style.fontFamily || 'Arial';
+
+  // ✅ Resolve the user's requested font to a family that actually
+  //    exists on the Linux deployment host (Liberation / DejaVu).
+  const fontFamily     = mapFont(style.fontFamily);
+
   const textTransform  = style.textTransform || 'none';
   const lineHeight     = (style.lineHeight || 1.4) * fontSize;
 
@@ -83,9 +88,10 @@ const renderTextToSvg = (text, style, width, height) => {
 
   const lines = wrapText(displayText);
 
-  // ─── Build SVG ────────────────────────────────────────────────
-  // Using INLINE attributes only (no <style> block, no class selectors)
-  // because Sharp/librsvg has limited CSS support.
+  // ─── Build SVG with INLINE attributes only ────────────────────
+  // Using inline presentation attributes (not a <style> block with
+  // class selectors) because Sharp's librsvg renderer has limited
+  // CSS support and reliably honours only inline attributes.
   const anchorMap = { left: 'start', center: 'middle', right: 'end' };
   const anchor = anchorMap[textAlign] || 'start';
   const xPos =
@@ -99,8 +105,8 @@ const renderTextToSvg = (text, style, width, height) => {
 
   lines.forEach((line, i) => {
     // Offset by fontSize so default baseline puts the TOP of the text
-    // at y = i * lineHeight (avoids reliance on dominant-baseline which
-    // librsvg doesn't reliably honour).
+    // at y = i * lineHeight. We don't use `dominant-baseline="hanging"`
+    // because librsvg doesn't reliably honour it.
     const y = i * lineHeight + fontSize;
     svg +=
       `<text ` +
@@ -188,8 +194,7 @@ const overlayDesign = async ({
     const style = overlay.style || {};
     const overlayPos = overlay.position || { x: 0, y: 0, width: 100, height: 20 };
 
-    // Skip empty overlays entirely — drawing an empty SVG is wasted work
-    // and occasionally trips up librsvg.
+    // Skip empty overlays — drawing an empty SVG is wasted work.
     if (!text.trim()) continue;
 
     const svgBuffer = renderTextToSvg(
