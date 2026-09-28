@@ -2,7 +2,8 @@
 
 const Campaign = require('./campaign.model');
 const Template = require('../templates/template.model');
-const Design = require('../designs/design.model');
+const Design   = require('../designs/design.model');
+const Settings = require('../settings/settings.model');
 const qrService = require('./qr.service');
 const { sendTemplateMessage } = require('../whatsapp/whatsapp.service');
 const ApiError = require('../../utils/apiError');
@@ -11,25 +12,26 @@ const { decrypt } = require('../../utils/encryption');
 const minioService = require('../../services/minio.service');
 const { deleteResources } = require('../../utils/minioCleanup');
 const WhatsAppMessage = require('./message.model');
+const { normalizePhone } = require('../../utils/phone');
 
-// ─── Helpers ──────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
   const multipliers = {
     seconds: 1000,
     minutes: 60 * 1000,
-    hours: 60 * 60 * 1000,
-    days: 24 * 60 * 60 * 1000,
+    hours:   60 * 60 * 1000,
+    days:    24 * 60 * 60 * 1000,
   };
   return (value || 1) * (multipliers[unit] || 60000);
 };
 
 const extractPlaceholders = (body) => {
   const matches = body.match(/{{(\d+)}}/g) || [];
-  return matches.map(m => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
+  return matches.map((m) => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
 };
 
 const buildBodyParameters = (recipient, placeholderNumbers, mapping) => {
-  return placeholderNumbers.map(num => {
+  return placeholderNumbers.map((num) => {
     const columnName = mapping?.[String(num)] || '';
     const value = columnName ? (recipient[columnName] || '') : '';
     return { type: 'text', text: value };
@@ -46,26 +48,51 @@ const validateTemplateId = (templateId) => {
   return true;
 };
 
-// Normalize phone: remove non-digits, remove leading '0', ensure country code 234, no '+'
-const normalizePhone = (phone) => {
-  if (!phone) return '';
-  let cleaned = String(phone).replace(/[^\d]/g, '');
-  if (cleaned.startsWith('0')) {
-    cleaned = '234' + cleaned.slice(1);
+// ─── Resolve country-code settings for a new campaign ─────────────
+const resolvePhoneSettings = async (data) => {
+  let { autoAddCountryCode, defaultCountryCode } = data;
+
+  // Only hit the settings collection if either value is missing
+  if (autoAddCountryCode === undefined || defaultCountryCode === undefined) {
+    const settings = data.userId
+      ? await Settings.findOne({ userId: data.userId })
+      : null;
+    const md = settings?.messageDefaults || {};
+
+    if (autoAddCountryCode === undefined) {
+      autoAddCountryCode = md.autoAddCountryCode ?? true;
+    }
+    if (defaultCountryCode === undefined) {
+      defaultCountryCode = md.defaultCountryCode ?? '234';
+    }
   }
-  if (!cleaned.startsWith('234')) {
-    cleaned = '234' + cleaned;
-  }
-  return cleaned;
+
+  return { autoAddCountryCode, defaultCountryCode };
 };
 
-// ─── Create campaign ─────────────────────────────────────────────────
+// ─── Create campaign ─────────────────────────────────────────────
 const createCampaign = async (data) => {
-  const campaign = await Campaign.create(data);
+  const { autoAddCountryCode, defaultCountryCode } = await resolvePhoneSettings(data);
+
+  const recipients = (data.recipients || []).map((r) => ({
+    ...r,
+    phone: normalizePhone(r.phone, { enabled: autoAddCountryCode, countryCode: defaultCountryCode }),
+    status: r.status || 'pending',
+    checkedIn: r.checkedIn || false,
+    checkedInAt: r.checkedInAt || null,
+  }));
+
+  const campaign = await Campaign.create({
+    ...data,
+    recipients,
+    autoAddCountryCode,
+    defaultCountryCode,
+  });
+
   return campaign;
 };
 
-// ─── Upload header image to MinIO ─────────────────────────────────
+// ─── Upload header image to MinIO ────────────────────────────────
 const uploadHeaderImage = async (fileBuffer, originalName) => {
   const timestamp = Date.now();
   const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
@@ -73,46 +100,33 @@ const uploadHeaderImage = async (fileBuffer, originalName) => {
 
   const ext = originalName.split('.').pop().toLowerCase();
   const contentTypeMap = {
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'png': 'image/png',
-    'gif': 'image/gif',
-    'webp': 'image/webp',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+    gif: 'image/gif',  webp: 'image/webp',
   };
   const contentType = contentTypeMap[ext] || 'application/octet-stream';
 
-  const url = await minioService.uploadBuffer(objectName, fileBuffer, { 'Content-Type': contentType });
-  return url;
+  return minioService.uploadBuffer(objectName, fileBuffer, { 'Content-Type': contentType });
 };
 
-// ─── Update campaign header image / includeHeaderImage flag ───
+// ─── Update campaign header image ─────────────────────────────────
 const updateCampaignHeaderImage = async (campaignId, updates) => {
-  if (typeof updates === 'string') {
-    updates = { headerImageUrl: updates };
-  }
+  if (typeof updates === 'string') updates = { headerImageUrl: updates };
 
   const updateFields = {};
-  if (updates.headerImageUrl !== undefined) {
-    updateFields.headerImageUrl = updates.headerImageUrl;
-  }
-  if (updates.includeHeaderImage !== undefined) {
-    updateFields.includeHeaderImage = updates.includeHeaderImage;
-  }
+  if (updates.headerImageUrl !== undefined)     updateFields.headerImageUrl = updates.headerImageUrl;
+  if (updates.includeHeaderImage !== undefined) updateFields.includeHeaderImage = updates.includeHeaderImage;
 
-  const campaign = await Campaign.findByIdAndUpdate(
-    campaignId,
-    updateFields,
-    { returnDocument: 'after', runValidators: true }
-  );
+  const campaign = await Campaign.findByIdAndUpdate(campaignId, updateFields, {
+    returnDocument: 'after', runValidators: true,
+  });
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   return campaign;
 };
 
-// ─── Rename a campaign (ensure ownership) ─────────────────────────
+// ─── Rename ───────────────────────────────────────────────────────
 const renameCampaign = async (campaignId, newName, userId) => {
-  if (!newName || !newName.trim()) {
-    throw new ApiError(400, 'Campaign name cannot be empty');
-  }
+  if (!newName || !newName.trim()) throw new ApiError(400, 'Campaign name cannot be empty');
+
   const campaign = await Campaign.findOneAndUpdate(
     { _id: campaignId, userId },
     { name: newName.trim() },
@@ -122,7 +136,7 @@ const renameCampaign = async (campaignId, newName, userId) => {
   return campaign;
 };
 
-// ─── Launch campaign ────────────────────────────────────────────────
+// ─── Launch ───────────────────────────────────────────────────────
 const launchCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -149,27 +163,17 @@ const launchCampaign = async (campaignId) => {
 
       const placeholders = extractPlaceholders(variant.body);
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
-
       const components = [];
 
       if (campaign.includeHeaderImage && template.showQR !== false) {
         if (campaign.headerImageUrl) {
-          components.push({
-            type: 'header',
-            parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
-          });
+          components.push({ type: 'header', parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }] });
         } else if (recipient.qrUrl) {
-          components.push({
-            type: 'header',
-            parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
-          });
+          components.push({ type: 'header', parameters: [{ type: 'image', image: { link: recipient.qrUrl } }] });
         }
       }
 
-      components.push({
-        type: 'body',
-        parameters: bodyParams,
-      });
+      components.push({ type: 'body', parameters: bodyParams });
 
       const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
@@ -192,7 +196,7 @@ const launchCampaign = async (campaignId) => {
     }
 
     if (i < recipients.length - 1 && (i + 1) % campaign.batchSize === 0) {
-      await new Promise(resolve =>
+      await new Promise((resolve) =>
         setTimeout(resolve, getWaitMilliseconds(campaign.waitValue, campaign.waitUnit))
       );
     }
@@ -204,19 +208,20 @@ const launchCampaign = async (campaignId) => {
   return campaign;
 };
 
-// ─── Get single campaign ─────────────────────────────────────────────
+// ─── Get single campaign ──────────────────────────────────────────
 const getCampaignById = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   return campaign;
 };
 
-// ─── Get campaign history ───────────────────────────────────────────
+// ─── Get history ──────────────────────────────────────────────────
 const getCampaignHistory = async (filters = {}) => {
   const { search, status, page = 1, limit = 10 } = filters;
   const query = {};
   if (status && status !== 'all') query.status = status;
   if (search) query.name = { $regex: search, $options: 'i' };
+
   const total = await Campaign.countDocuments(query);
   const campaigns = await Campaign.find(query)
     .sort({ createdAt: -1 })
@@ -225,7 +230,7 @@ const getCampaignHistory = async (filters = {}) => {
   return { campaigns, total, page, totalPages: Math.ceil(total / limit) };
 };
 
-// ─── Retry failed recipients ────────────────────────────────────────
+// ─── Retry failed ─────────────────────────────────────────────────
 const retryFailedRecipients = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -252,27 +257,17 @@ const retryFailedRecipients = async (campaignId) => {
 
       const placeholders = extractPlaceholders(variant.body);
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
-
       const components = [];
 
       if (campaign.includeHeaderImage && template.showQR !== false) {
         if (campaign.headerImageUrl) {
-          components.push({
-            type: 'header',
-            parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
-          });
+          components.push({ type: 'header', parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }] });
         } else if (recipient.qrUrl) {
-          components.push({
-            type: 'header',
-            parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
-          });
+          components.push({ type: 'header', parameters: [{ type: 'image', image: { link: recipient.qrUrl } }] });
         }
       }
 
-      components.push({
-        type: 'body',
-        parameters: bodyParams,
-      });
+      components.push({ type: 'body', parameters: bodyParams });
 
       const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
@@ -300,7 +295,7 @@ const retryFailedRecipients = async (campaignId) => {
   return campaign;
 };
 
-// ─── Delete campaign (uses MinIO) ─────────────────────────────────
+// ─── Delete campaign ──────────────────────────────────────────────
 const deleteCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -318,21 +313,13 @@ const deleteCampaign = async (campaignId) => {
     }
   }
 
-  if (objectNames.length > 0) {
-    await deleteResources(objectNames);
-  }
+  if (objectNames.length > 0) await deleteResources(objectNames);
 
   await Campaign.findByIdAndDelete(campaignId);
   return { deleted: true, imagesRemoved: objectNames.length };
 };
 
-// ─── Check‑in recipient (FULLY ATOMIC) ─────────────────────────────
-
-
-
-
-
-// ─── Delete scan history entry (requires passcode) ────────────────
+// ─── Delete a scan history entry ──────────────────────────────────
 const deleteScanHistoryEntry = async (campaignId, scanId) => {
   const campaign = await Campaign.findByIdAndUpdate(
     campaignId,
@@ -343,23 +330,7 @@ const deleteScanHistoryEntry = async (campaignId, scanId) => {
   return campaign;
 };
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// ─── Check‑in recipient (FULLY ATOMIC) ─────────────────────────────
+// ─── Check-in ─────────────────────────────────────────────────────
 const checkInRecipient = async (campaignId, qrData) => {
   let rawData;
   try {
@@ -371,28 +342,19 @@ const checkInRecipient = async (campaignId, qrData) => {
   const parts = rawData.split('|');
   const core = parts[0];
   const coreParts = core.split('_');
-  if (coreParts.length < 2) {
-    throw new ApiError(400, 'Invalid QR code data');
-  }
+  if (coreParts.length < 2) throw new ApiError(400, 'Invalid QR code data');
 
   const [campaignIdFromQR, phone] = coreParts;
-
   if (campaignIdFromQR !== campaignId) {
     throw new ApiError(400, 'QR code does not belong to this event');
   }
 
   const campaign = await Campaign.findById(campaignId).populate('designId');
-  if (!campaign) {
-    throw new ApiError(404, 'Event not found');
-  }
+  if (!campaign) throw new ApiError(404, 'Event not found');
 
-  const recipient = campaign.recipients.find(r => r.phone === phone);
-  if (!recipient) {
-    throw new ApiError(404, 'Recipient not found for this event');
-  }
-  if (recipient.checkedIn) {
-    throw new ApiError(400, 'This QR code has already been used for check‑in');
-  }
+  const recipient = campaign.recipients.find((r) => r.phone === phone);
+  if (!recipient) throw new ApiError(404, 'Recipient not found for this event');
+  if (recipient.checkedIn) throw new ApiError(400, 'This QR code has already been used for check-in');
 
   let qrDataFields = [];
   const design = campaign.designId;
@@ -400,24 +362,14 @@ const checkInRecipient = async (campaignId, qrData) => {
     const extraParts = parts.slice(1);
     qrDataFields = design.qrDataFields.map((fieldKey, idx) => {
       const columnName = campaign.mapping?.[fieldKey] || fieldKey;
-      return {
-        label: columnName,
-        value: extraParts[idx] !== undefined ? extraParts[idx] : '',
-      };
+      return { label: columnName, value: extraParts[idx] !== undefined ? extraParts[idx] : '' };
     });
   }
 
   const updatedCampaign = await Campaign.findOneAndUpdate(
+    { _id: campaignId, 'recipients.phone': phone, 'recipients.checkedIn': false },
     {
-      _id: campaignId,
-      'recipients.phone': phone,
-      'recipients.checkedIn': false,
-    },
-    {
-      $set: {
-        'recipients.$.checkedIn': true,
-        'recipients.$.checkedInAt': new Date(),
-      },
+      $set: { 'recipients.$.checkedIn': true, 'recipients.$.checkedInAt': new Date() },
       $push: {
         scanHistory: {
           phone: recipient.phone,
@@ -428,17 +380,12 @@ const checkInRecipient = async (campaignId, qrData) => {
         },
       },
     },
-    {
-      new: true,
-      runValidators: true,
-    }
+    { new: true, runValidators: true }
   );
 
-  if (!updatedCampaign) {
-    throw new ApiError(400, 'Recipient not found or already checked in');
-  }
+  if (!updatedCampaign) throw new ApiError(400, 'Recipient not found or already checked in');
 
-  const updatedRecipient = updatedCampaign.recipients.find(r => r.phone === phone);
+  const updatedRecipient = updatedCampaign.recipients.find((r) => r.phone === phone);
   return {
     campaign: updatedCampaign.name,
     recipient: {
@@ -452,52 +399,34 @@ const checkInRecipient = async (campaignId, qrData) => {
   };
 };
 
-// ─── Reset check‑in status for a recipient (ATOMIC) ──────────────
+// ─── Reset check-in ───────────────────────────────────────────────
 const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
   let recipient = campaign.recipients.id(recipientIdentifier);
-  if (!recipient) {
-    recipient = campaign.recipients.find(r => r.phone === recipientIdentifier);
-  }
-  if (!recipient) {
-    throw new ApiError(404, 'Recipient not found');
-  }
-  if (!recipient.checkedIn) {
-    throw new ApiError(400, 'Recipient is not checked in');
-  }
+  if (!recipient) recipient = campaign.recipients.find((r) => r.phone === recipientIdentifier);
+  if (!recipient) throw new ApiError(404, 'Recipient not found');
+  if (!recipient.checkedIn) throw new ApiError(400, 'Recipient is not checked in');
 
   const updatedCampaign = await Campaign.findOneAndUpdate(
+    { _id: campaignId, 'recipients._id': recipient._id, 'recipients.checkedIn': true },
     {
-      _id: campaignId,
-      'recipients._id': recipient._id,
-      'recipients.checkedIn': true,
-    },
-    {
-      $set: {
-        'recipients.$.checkedIn': false,
-        'recipients.$.checkedInAt': null,
-      },
+      $set: { 'recipients.$.checkedIn': false, 'recipients.$.checkedInAt': null },
       $push: {
         scanHistory: {
           phone: recipient.phone,
           name: recipient.name || recipient.phone,
           status: 'success',
-          message: 'Check‑in reset by admin/staff',
+          message: 'Check-in reset by admin/staff',
           timestamp: new Date(),
         },
       },
     },
-    {
-      new: true,
-      runValidators: true,
-    }
+    { new: true, runValidators: true }
   );
 
-  if (!updatedCampaign) {
-    throw new ApiError(400, 'Recipient not found or not currently checked in');
-  }
+  if (!updatedCampaign) throw new ApiError(400, 'Recipient not found or not currently checked in');
 
   const updatedRecipient = updatedCampaign.recipients.id(recipient._id);
   return {
@@ -510,7 +439,7 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   };
 };
 
-// ─── Get scan history ───────────────────────────────────────────────
+// ─── Scan history ─────────────────────────────────────────────────
 const getScanHistory = async (campaignId, filters = {}) => {
   const { search, page = 1, limit = 20 } = filters;
   const campaign = await Campaign.findById(campaignId);
@@ -520,14 +449,14 @@ const getScanHistory = async (campaignId, filters = {}) => {
 
   if (search) {
     const s = search.toLowerCase();
-    history = history.filter(h => {
+    history = history.filter((h) => {
       if ((h.name && h.name.toLowerCase().includes(s)) || (h.phone && h.phone.toLowerCase().includes(s))) {
         return true;
       }
       if (h.qrDataFields && h.qrDataFields.length > 0) {
-        return h.qrDataFields.some(field =>
-          (field.label && field.label.toLowerCase().includes(s)) ||
-          (field.value && String(field.value).toLowerCase().includes(s))
+        return h.qrDataFields.some((f) =>
+          (f.label && f.label.toLowerCase().includes(s)) ||
+          (f.value && String(f.value).toLowerCase().includes(s))
         );
       }
       return false;
@@ -540,18 +469,19 @@ const getScanHistory = async (campaignId, filters = {}) => {
   const end = start + limit;
   const data = history.slice(start, end);
 
-  return {
-    history: data,
-    total,
-    page,
-    totalPages: Math.ceil(total / limit),
-  };
+  return { history: data, total, page, totalPages: Math.ceil(total / limit) };
 };
 
-// ─── Send a manual message to a specific phone number ───────────
+// ─── Send manual message ──────────────────────────────────────────
 const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  // ✅ Normalize the manual phone using this campaign's toggle
+  const normalizedPhone = normalizePhone(phone, {
+    enabled: campaign.autoAddCountryCode ?? true,
+    countryCode: campaign.defaultCountryCode ?? '234',
+  });
 
   const template = await Template.findById(campaign.templateId);
   if (!template) throw new ApiError(404, 'Template not found');
@@ -563,37 +493,24 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   if (!variant) throw new ApiError(400, 'No active variant found');
 
   const placeholders = extractPlaceholders(variant.body);
-
   const recipientData = { ...customVariables };
-  const existingRecipient = campaign.recipients.find(r => r.phone === phone);
-  if (existingRecipient) {
-    Object.assign(recipientData, existingRecipient.toObject());
-  }
+  const existingRecipient = campaign.recipients.find((r) => r.phone === normalizedPhone);
+  if (existingRecipient) Object.assign(recipientData, existingRecipient.toObject());
 
   const bodyParams = buildBodyParameters(recipientData, placeholders, campaign.mapping);
-
   const components = [];
 
   if (campaign.includeHeaderImage && template.showQR !== false) {
     if (campaign.headerImageUrl) {
-      components.push({
-        type: 'header',
-        parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
-      });
+      components.push({ type: 'header', parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }] });
     } else if (existingRecipient?.qrUrl) {
-      components.push({
-        type: 'header',
-        parameters: [{ type: 'image', image: { link: existingRecipient.qrUrl } }],
-      });
+      components.push({ type: 'header', parameters: [{ type: 'image', image: { link: existingRecipient.qrUrl } }] });
     }
   }
 
-  components.push({
-    type: 'body',
-    parameters: bodyParams,
-  });
+  components.push({ type: 'body', parameters: bodyParams });
 
-  const response = await sendTemplateMessage(phone, templateName, components, campaign.userId);
+  const response = await sendTemplateMessage(normalizedPhone, templateName, components, campaign.userId);
 
   if (existingRecipient) {
     await WhatsAppMessage.create({
@@ -607,14 +524,25 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
     });
   }
 
-  return { success: true, phone, templateName };
+  return { success: true, phone: normalizedPhone, templateName };
 };
 
-// ─── Add recipients to existing campaign (ATOMIC) ──────────────────
+// ─── Add recipients (uses campaign's stored toggle) ───────────────
 const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
-  const normalizedRecipients = newRecipients.map(r => ({
+  // ✅ Read the campaign's stored toggle before normalizing
+  const existing = await Campaign.findById(campaignId)
+    .select('autoAddCountryCode defaultCountryCode');
+  if (!existing) throw new ApiError(404, 'Campaign not found');
+
+  const autoAddCountryCode = existing.autoAddCountryCode ?? true;
+  const defaultCountryCode = existing.defaultCountryCode ?? '234';
+
+  const normalizedRecipients = newRecipients.map((r) => ({
     ...r,
-    phone: normalizePhone(r.phone || ''),
+    phone: normalizePhone(r.phone || '', {
+      enabled: autoAddCountryCode,
+      countryCode: defaultCountryCode,
+    }),
     status: 'pending',
     checkedIn: false,
     checkedInAt: null,
@@ -623,9 +551,7 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
   const updatedCampaign = await Campaign.findOneAndUpdate(
     { _id: campaignId },
     {
-      $push: {
-        recipients: { $each: normalizedRecipients },
-      },
+      $push: { recipients: { $each: normalizedRecipients } },
       $set: {
         addRecipientsStatus: {
           total: normalizedRecipients.length,
@@ -635,23 +561,20 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
         },
       },
     },
-    {
-      new: true,
-      runValidators: true,
-    }
+    { new: true, runValidators: true }
   );
 
   if (!updatedCampaign) throw new ApiError(404, 'Campaign not found');
 
   const added = updatedCampaign.recipients.slice(-normalizedRecipients.length);
-  const recipientIds = added.map(r => r._id);
+  const recipientIds = added.map((r) => r._id);
 
   processNewRecipients(campaignId, recipientIds, { generateQr, sendNow });
 
   return updatedCampaign;
 };
 
-// ─── Background processing of new recipients ──────────────────────
+// ─── Background processing of new recipients ─────────────────────
 const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
   if (generateQr) {
     await Campaign.findOneAndUpdate(
@@ -687,6 +610,7 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
       } catch (err) {
         console.error(`QR generation failed for ${recipient.phone}:`, err.message);
       }
+
       await Campaign.findOneAndUpdate(
         { _id: campaignId },
         { $inc: { 'addRecipientsStatus.completed': 1 } }
@@ -711,15 +635,9 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
 
   await Campaign.findOneAndUpdate(
     { _id: campaignId },
-    {
-      $set: {
-        'addRecipientsStatus.status': 'completed',
-        'addRecipientsStatus.phase': 'none',
-      },
-    }
+    { $set: { 'addRecipientsStatus.status': 'completed', 'addRecipientsStatus.phase': 'none' } }
   );
 };
-
 
 // ─── Send template messages to specific recipients ────────────────
 const sendCampaignToRecipients = async (campaignId, recipientIds) => {
@@ -742,29 +660,24 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
 
       const placeholders = extractPlaceholders(variant.body);
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
-
       const components = [];
 
       if (campaign.includeHeaderImage && template.showQR !== false) {
         if (campaign.headerImageUrl) {
-          components.push({
-            type: 'header',
-            parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }],
-          });
+          components.push({ type: 'header', parameters: [{ type: 'image', image: { link: campaign.headerImageUrl } }] });
         } else if (recipient.qrUrl) {
-          components.push({
-            type: 'header',
-            parameters: [{ type: 'image', image: { link: recipient.qrUrl } }],
-          });
+          components.push({ type: 'header', parameters: [{ type: 'image', image: { link: recipient.qrUrl } }] });
         }
       }
 
-      components.push({
-        type: 'body',
-        parameters: bodyParams,
-      });
+      components.push({ type: 'body', parameters: bodyParams });
 
-      const response = await sendTemplateMessage(recipient.phone, template.whatsappTemplateName || 'event_qr_delivery', components, campaign.userId);
+      const response = await sendTemplateMessage(
+        recipient.phone,
+        template.whatsappTemplateName || 'event_qr_delivery',
+        components,
+        campaign.userId
+      );
 
       await WhatsAppMessage.create({
         campaignId: campaign._id,
@@ -789,6 +702,7 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
   await campaign.save();
   return campaign;
 };
+
 module.exports = {
   createCampaign,
   launchCampaign,
