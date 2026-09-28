@@ -14,13 +14,14 @@ const { deleteResources } = require('../../utils/minioCleanup');
 const WhatsAppMessage = require('./message.model');
 const { normalizePhone } = require('../../utils/phone');
 
-// ─── Helpers ──────────────────────────────────────────────────────
+// ─── Log prefix so we can filter in Coolify ──────────────────────
+const LOG = '[PHONE]';
+
+// ─── Wait helpers ────────────────────────────────────────────────
 const getWaitMilliseconds = (value, unit) => {
   const multipliers = {
-    seconds: 1000,
-    minutes: 60 * 1000,
-    hours:   60 * 60 * 1000,
-    days:    24 * 60 * 60 * 1000,
+    seconds: 1000, minutes: 60 * 1000,
+    hours: 60 * 60 * 1000, days: 24 * 60 * 60 * 1000,
   };
   return (value || 1) * (multipliers[unit] || 60000);
 };
@@ -30,41 +31,35 @@ const extractPlaceholders = (body) => {
   return matches.map((m) => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
 };
 
-const buildBodyParameters = (recipient, placeholderNumbers, mapping) => {
-  return placeholderNumbers.map((num) => {
+const buildBodyParameters = (recipient, placeholderNumbers, mapping) =>
+  placeholderNumbers.map((num) => {
     const columnName = mapping?.[String(num)] || '';
     const value = columnName ? (recipient[columnName] || '') : '';
     return { type: 'text', text: value };
   });
-};
 
 const validateTemplateId = (templateId) => {
-  if (!templateId) {
-    throw new ApiError(400, 'Campaign is missing a template ID. Please recreate the campaign.');
-  }
-  if (!mongoose.Types.ObjectId.isValid(templateId)) {
-    throw new ApiError(400, 'Invalid template ID format.');
-  }
+  if (!templateId) throw new ApiError(400, 'Campaign is missing a template ID. Please recreate the campaign.');
+  if (!mongoose.Types.ObjectId.isValid(templateId)) throw new ApiError(400, 'Invalid template ID format.');
   return true;
 };
 
-// ─── Resolve country-code settings for a new campaign ─────────────
+// ─── Resolve phone settings (campaign → user default) ────────────
 const resolvePhoneSettings = async (data) => {
   let { autoAddCountryCode, defaultCountryCode } = data;
 
-  // Only hit the settings collection if either value is missing
   if (autoAddCountryCode === undefined || defaultCountryCode === undefined) {
     const settings = data.userId
       ? await Settings.findOne({ userId: data.userId })
       : null;
     const md = settings?.messageDefaults || {};
 
-    if (autoAddCountryCode === undefined) {
-      autoAddCountryCode = md.autoAddCountryCode ?? true;
-    }
-    if (defaultCountryCode === undefined) {
-      defaultCountryCode = md.defaultCountryCode ?? '234';
-    }
+    if (autoAddCountryCode === undefined) autoAddCountryCode = md.autoAddCountryCode ?? true;
+    if (defaultCountryCode === undefined) defaultCountryCode = md.defaultCountryCode ?? '234';
+
+    console.log(`${LOG} resolved from user settings →`, { autoAddCountryCode, defaultCountryCode });
+  } else {
+    console.log(`${LOG} received from frontend →`, { autoAddCountryCode, defaultCountryCode });
   }
 
   return { autoAddCountryCode, defaultCountryCode };
@@ -74,13 +69,26 @@ const resolvePhoneSettings = async (data) => {
 const createCampaign = async (data) => {
   const { autoAddCountryCode, defaultCountryCode } = await resolvePhoneSettings(data);
 
+  console.log(`${LOG} createCampaign raw recipients (first 3):`);
+  (data.recipients || []).slice(0, 3).forEach((r, i) =>
+    console.log(`  [${i}] phone = "${r.phone}"`)
+  );
+
   const recipients = (data.recipients || []).map((r) => ({
     ...r,
-    phone: normalizePhone(r.phone, { enabled: autoAddCountryCode, countryCode: defaultCountryCode }),
+    phone: normalizePhone(r.phone, {
+      enabled: autoAddCountryCode,
+      countryCode: defaultCountryCode,
+    }),
     status: r.status || 'pending',
     checkedIn: r.checkedIn || false,
     checkedInAt: r.checkedInAt || null,
   }));
+
+  console.log(`${LOG} createCampaign normalized recipients (first 3):`);
+  recipients.slice(0, 3).forEach((r, i) =>
+    console.log(`  [${i}] phone = "${r.phone}"`)
+  );
 
   const campaign = await Campaign.create({
     ...data,
@@ -92,26 +100,25 @@ const createCampaign = async (data) => {
   return campaign;
 };
 
-// ─── Upload header image to MinIO ────────────────────────────────
+// ─── Upload header image ────────────────────────────────────────
 const uploadHeaderImage = async (fileBuffer, originalName) => {
   const timestamp = Date.now();
   const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
   const objectName = `campaign_headers/${timestamp}_${safeName}`;
-
   const ext = originalName.split('.').pop().toLowerCase();
   const contentTypeMap = {
     jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
     gif: 'image/gif',  webp: 'image/webp',
   };
-  const contentType = contentTypeMap[ext] || 'application/octet-stream';
-
-  return minioService.uploadBuffer(objectName, fileBuffer, { 'Content-Type': contentType });
+  return minioService.uploadBuffer(
+    objectName, fileBuffer,
+    { 'Content-Type': contentTypeMap[ext] || 'application/octet-stream' }
+  );
 };
 
-// ─── Update campaign header image ─────────────────────────────────
+// ─── Update campaign header image ────────────────────────────────
 const updateCampaignHeaderImage = async (campaignId, updates) => {
   if (typeof updates === 'string') updates = { headerImageUrl: updates };
-
   const updateFields = {};
   if (updates.headerImageUrl !== undefined)     updateFields.headerImageUrl = updates.headerImageUrl;
   if (updates.includeHeaderImage !== undefined) updateFields.includeHeaderImage = updates.includeHeaderImage;
@@ -123,10 +130,9 @@ const updateCampaignHeaderImage = async (campaignId, updates) => {
   return campaign;
 };
 
-// ─── Rename ───────────────────────────────────────────────────────
+// ─── Rename ──────────────────────────────────────────────────────
 const renameCampaign = async (campaignId, newName, userId) => {
   if (!newName || !newName.trim()) throw new ApiError(400, 'Campaign name cannot be empty');
-
   const campaign = await Campaign.findOneAndUpdate(
     { _id: campaignId, userId },
     { name: newName.trim() },
@@ -136,14 +142,13 @@ const renameCampaign = async (campaignId, newName, userId) => {
   return campaign;
 };
 
-// ─── Launch ───────────────────────────────────────────────────────
+// ─── Launch ──────────────────────────────────────────────────────
 const launchCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   if (campaign.status === 'sending') throw new ApiError(400, 'Campaign is already sending');
 
   validateTemplateId(campaign.templateId);
-
   const template = await Template.findById(campaign.templateId);
   if (!template) throw new ApiError(404, 'Template not found');
   const templateName = template.whatsappTemplateName || 'event_qr_delivery';
@@ -178,10 +183,8 @@ const launchCampaign = async (campaignId) => {
       const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
       await WhatsAppMessage.create({
-        campaignId: campaign._id,
-        recipientId: recipient._id,
-        phone: recipient.phone,
-        direction: 'outgoing',
+        campaignId: campaign._id, recipientId: recipient._id,
+        phone: recipient.phone, direction: 'outgoing',
         body: 'Template message sent',
         whatsappMessageId: response.messages?.[0]?.id,
         timestamp: new Date(),
@@ -208,33 +211,29 @@ const launchCampaign = async (campaignId) => {
   return campaign;
 };
 
-// ─── Get single campaign ──────────────────────────────────────────
+// ─── Get single campaign ────────────────────────────────────────
 const getCampaignById = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   return campaign;
 };
 
-// ─── Get history ──────────────────────────────────────────────────
+// ─── History ────────────────────────────────────────────────────
 const getCampaignHistory = async (filters = {}) => {
   const { search, status, page = 1, limit = 10 } = filters;
   const query = {};
   if (status && status !== 'all') query.status = status;
   if (search) query.name = { $regex: search, $options: 'i' };
-
   const total = await Campaign.countDocuments(query);
   const campaigns = await Campaign.find(query)
-    .sort({ createdAt: -1 })
-    .skip((page - 1) * limit)
-    .limit(limit);
+    .sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit);
   return { campaigns, total, page, totalPages: Math.ceil(total / limit) };
 };
 
-// ─── Retry failed ─────────────────────────────────────────────────
+// ─── Retry failed ───────────────────────────────────────────────
 const retryFailedRecipients = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
-
   validateTemplateId(campaign.templateId);
 
   const template = await Template.findById(campaign.templateId);
@@ -266,16 +265,13 @@ const retryFailedRecipients = async (campaignId) => {
           components.push({ type: 'header', parameters: [{ type: 'image', image: { link: recipient.qrUrl } }] });
         }
       }
-
       components.push({ type: 'body', parameters: bodyParams });
 
       const response = await sendTemplateMessage(recipient.phone, templateName, components, campaign.userId);
 
       await WhatsAppMessage.create({
-        campaignId: campaign._id,
-        recipientId: recipient._id,
-        phone: recipient.phone,
-        direction: 'outgoing',
+        campaignId: campaign._id, recipientId: recipient._id,
+        phone: recipient.phone, direction: 'outgoing',
         body: 'Template message sent',
         whatsappMessageId: response.messages?.[0]?.id,
         timestamp: new Date(),
@@ -295,7 +291,7 @@ const retryFailedRecipients = async (campaignId) => {
   return campaign;
 };
 
-// ─── Delete campaign ──────────────────────────────────────────────
+// ─── Delete campaign ────────────────────────────────────────────
 const deleteCampaign = async (campaignId) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -312,32 +308,26 @@ const deleteCampaign = async (campaignId) => {
       objectNames.push(objectName);
     }
   }
-
   if (objectNames.length > 0) await deleteResources(objectNames);
 
   await Campaign.findByIdAndDelete(campaignId);
   return { deleted: true, imagesRemoved: objectNames.length };
 };
 
-// ─── Delete a scan history entry ──────────────────────────────────
+// ─── Delete scan history entry ──────────────────────────────────
 const deleteScanHistoryEntry = async (campaignId, scanId) => {
   const campaign = await Campaign.findByIdAndUpdate(
-    campaignId,
-    { $pull: { scanHistory: { _id: scanId } } },
-    { new: true }
+    campaignId, { $pull: { scanHistory: { _id: scanId } } }, { new: true }
   );
   if (!campaign) throw new ApiError(404, 'Campaign not found');
   return campaign;
 };
 
-// ─── Check-in ─────────────────────────────────────────────────────
+// ─── Check-in ───────────────────────────────────────────────────
 const checkInRecipient = async (campaignId, qrData) => {
   let rawData;
-  try {
-    rawData = decrypt(qrData);
-  } catch (err) {
-    throw new ApiError(400, 'Invalid QR code: decryption failed');
-  }
+  try { rawData = decrypt(qrData); }
+  catch { throw new ApiError(400, 'Invalid QR code: decryption failed'); }
 
   const parts = rawData.split('|');
   const core = parts[0];
@@ -345,9 +335,7 @@ const checkInRecipient = async (campaignId, qrData) => {
   if (coreParts.length < 2) throw new ApiError(400, 'Invalid QR code data');
 
   const [campaignIdFromQR, phone] = coreParts;
-  if (campaignIdFromQR !== campaignId) {
-    throw new ApiError(400, 'QR code does not belong to this event');
-  }
+  if (campaignIdFromQR !== campaignId) throw new ApiError(400, 'QR code does not belong to this event');
 
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) throw new ApiError(404, 'Event not found');
@@ -384,7 +372,6 @@ const checkInRecipient = async (campaignId, qrData) => {
   );
 
   if (!updatedCampaign) throw new ApiError(400, 'Recipient not found or already checked in');
-
   const updatedRecipient = updatedCampaign.recipients.find((r) => r.phone === phone);
   return {
     campaign: updatedCampaign.name,
@@ -399,7 +386,7 @@ const checkInRecipient = async (campaignId, qrData) => {
   };
 };
 
-// ─── Reset check-in ───────────────────────────────────────────────
+// ─── Reset check-in ─────────────────────────────────────────────
 const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
@@ -427,7 +414,6 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   );
 
   if (!updatedCampaign) throw new ApiError(400, 'Recipient not found or not currently checked in');
-
   const updatedRecipient = updatedCampaign.recipients.id(recipient._id);
   return {
     campaign: updatedCampaign.name,
@@ -439,20 +425,17 @@ const resetRecipientCheckIn = async (campaignId, recipientIdentifier) => {
   };
 };
 
-// ─── Scan history ─────────────────────────────────────────────────
+// ─── Scan history ───────────────────────────────────────────────
 const getScanHistory = async (campaignId, filters = {}) => {
   const { search, page = 1, limit = 20 } = filters;
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
   let history = campaign.scanHistory || [];
-
   if (search) {
     const s = search.toLowerCase();
     history = history.filter((h) => {
-      if ((h.name && h.name.toLowerCase().includes(s)) || (h.phone && h.phone.toLowerCase().includes(s))) {
-        return true;
-      }
+      if ((h.name && h.name.toLowerCase().includes(s)) || (h.phone && h.phone.toLowerCase().includes(s))) return true;
       if (h.qrDataFields && h.qrDataFields.length > 0) {
         return h.qrDataFields.some((f) =>
           (f.label && f.label.toLowerCase().includes(s)) ||
@@ -462,26 +445,22 @@ const getScanHistory = async (campaignId, filters = {}) => {
       return false;
     });
   }
-
   history = history.sort((a, b) => b.timestamp - a.timestamp);
   const total = history.length;
   const start = (page - 1) * limit;
-  const end = start + limit;
-  const data = history.slice(start, end);
-
-  return { history: data, total, page, totalPages: Math.ceil(total / limit) };
+  return { history: history.slice(start, start + limit), total, page, totalPages: Math.ceil(total / limit) };
 };
 
-// ─── Send manual message ──────────────────────────────────────────
+// ─── Manual message ─────────────────────────────────────────────
 const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
 
-  // ✅ Normalize the manual phone using this campaign's toggle
   const normalizedPhone = normalizePhone(phone, {
     enabled: campaign.autoAddCountryCode ?? true,
     countryCode: campaign.defaultCountryCode ?? '234',
   });
+  console.log(`${LOG} manual send → "${phone}" ⇒ "${normalizedPhone}"`);
 
   const template = await Template.findById(campaign.templateId);
   if (!template) throw new ApiError(404, 'Template not found');
@@ -507,29 +486,24 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
       components.push({ type: 'header', parameters: [{ type: 'image', image: { link: existingRecipient.qrUrl } }] });
     }
   }
-
   components.push({ type: 'body', parameters: bodyParams });
 
   const response = await sendTemplateMessage(normalizedPhone, templateName, components, campaign.userId);
 
   if (existingRecipient) {
     await WhatsAppMessage.create({
-      campaignId: campaign._id,
-      recipientId: existingRecipient._id,
-      phone: existingRecipient.phone,
-      direction: 'outgoing',
+      campaignId: campaign._id, recipientId: existingRecipient._id,
+      phone: existingRecipient.phone, direction: 'outgoing',
       body: 'Manual template message sent',
       whatsappMessageId: response.messages?.[0]?.id,
       timestamp: new Date(),
     });
   }
-
   return { success: true, phone: normalizedPhone, templateName };
 };
 
-// ─── Add recipients (uses campaign's stored toggle) ───────────────
+// ─── Add recipients ─────────────────────────────────────────────
 const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
-  // ✅ Read the campaign's stored toggle before normalizing
   const existing = await Campaign.findById(campaignId)
     .select('autoAddCountryCode defaultCountryCode');
   if (!existing) throw new ApiError(404, 'Campaign not found');
@@ -537,16 +511,19 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
   const autoAddCountryCode = existing.autoAddCountryCode ?? true;
   const defaultCountryCode = existing.defaultCountryCode ?? '234';
 
-  const normalizedRecipients = newRecipients.map((r) => ({
-    ...r,
-    phone: normalizePhone(r.phone || '', {
-      enabled: autoAddCountryCode,
-      countryCode: defaultCountryCode,
-    }),
-    status: 'pending',
-    checkedIn: false,
-    checkedInAt: null,
-  }));
+  console.log(`${LOG} addRecipients using campaign settings →`, { autoAddCountryCode, defaultCountryCode });
+
+  const normalizedRecipients = newRecipients.map((r) => {
+    const out = normalizePhone(r.phone || '', { enabled: autoAddCountryCode, countryCode: defaultCountryCode });
+    console.log(`${LOG}   "${r.phone}" ⇒ "${out}"`);
+    return {
+      ...r,
+      phone: out,
+      status: 'pending',
+      checkedIn: false,
+      checkedInAt: null,
+    };
+  });
 
   const updatedCampaign = await Campaign.findOneAndUpdate(
     { _id: campaignId },
@@ -565,38 +542,64 @@ const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr =
   );
 
   if (!updatedCampaign) throw new ApiError(404, 'Campaign not found');
-
   const added = updatedCampaign.recipients.slice(-normalizedRecipients.length);
   const recipientIds = added.map((r) => r._id);
-
   processNewRecipients(campaignId, recipientIds, { generateQr, sendNow });
-
   return updatedCampaign;
 };
 
-// ─── Background processing of new recipients ─────────────────────
+// ─── Renormalize all recipients in a campaign ───────────────────
+const renormalizeCampaignPhones = async (campaignId, options = {}) => {
+  const { forceStripPrefix } = options;
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) throw new ApiError(404, 'Campaign not found');
+
+  const enabled = campaign.autoAddCountryCode ?? true;
+  const countryCode = campaign.defaultCountryCode ?? '234';
+
+  console.log(`${LOG} renormalize campaign=${campaignId} →`, { enabled, countryCode, forceStripPrefix });
+
+  let changed = 0;
+  for (const r of campaign.recipients) {
+    const before = r.phone;
+    let work = String(r.phone ?? '');
+
+    if (forceStripPrefix && work.startsWith(forceStripPrefix)) {
+      work = work.slice(forceStripPrefix.length);
+    }
+
+    const after = normalizePhone(work, { enabled, countryCode });
+    if (after !== before) {
+      r.phone = after;
+      changed += 1;
+      console.log(`${LOG}   ${before} ⇒ ${after}`);
+    }
+  }
+
+  campaign.markModified('recipients');
+  await campaign.save();
+  return { total: campaign.recipients.length, changed };
+};
+
+// ─── Process new recipients (background) ────────────────────────
 const processNewRecipients = async (campaignId, recipientIds, { generateQr, sendNow }) => {
   if (generateQr) {
     await Campaign.findOneAndUpdate(
       { _id: campaignId },
-      {
-        $set: {
+      { $set: {
           'addRecipientsStatus.phase': 'qr',
           'addRecipientsStatus.total': recipientIds.length,
           'addRecipientsStatus.completed': 0,
           'addRecipientsStatus.status': 'processing',
-        },
-      }
+      } }
     );
-
     const campaign = await Campaign.findById(campaignId).select('designId mapping');
     const design = campaign.designId ? await Design.findById(campaign.designId) : null;
     const mapping = campaign.mapping || {};
 
     for (const id of recipientIds) {
       const recipientDoc = await Campaign.findOne(
-        { _id: campaignId, 'recipients._id': id },
-        { 'recipients.$': 1 }
+        { _id: campaignId, 'recipients._id': id }, { 'recipients.$': 1 }
       );
       if (!recipientDoc || !recipientDoc.recipients || recipientDoc.recipients.length === 0) continue;
       const recipient = recipientDoc.recipients[0];
@@ -610,10 +613,8 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
       } catch (err) {
         console.error(`QR generation failed for ${recipient.phone}:`, err.message);
       }
-
       await Campaign.findOneAndUpdate(
-        { _id: campaignId },
-        { $inc: { 'addRecipientsStatus.completed': 1 } }
+        { _id: campaignId }, { $inc: { 'addRecipientsStatus.completed': 1 } }
       );
     }
   }
@@ -621,14 +622,12 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
   if (sendNow) {
     await Campaign.findOneAndUpdate(
       { _id: campaignId },
-      {
-        $set: {
+      { $set: {
           'addRecipientsStatus.phase': 'sending',
           'addRecipientsStatus.total': recipientIds.length,
           'addRecipientsStatus.completed': 0,
           'addRecipientsStatus.status': 'processing',
-        },
-      }
+      } }
     );
     await sendCampaignToRecipients(campaignId, recipientIds);
   }
@@ -639,11 +638,10 @@ const processNewRecipients = async (campaignId, recipientIds, { generateQr, send
   );
 };
 
-// ─── Send template messages to specific recipients ────────────────
+// ─── Send to specific recipients ────────────────────────────────
 const sendCampaignToRecipients = async (campaignId, recipientIds) => {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
-
   const template = await Template.findById(campaign.templateId);
   if (!template) throw new ApiError(404, 'Template not found');
 
@@ -669,21 +667,17 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
           components.push({ type: 'header', parameters: [{ type: 'image', image: { link: recipient.qrUrl } }] });
         }
       }
-
       components.push({ type: 'body', parameters: bodyParams });
 
       const response = await sendTemplateMessage(
         recipient.phone,
         template.whatsappTemplateName || 'event_qr_delivery',
-        components,
-        campaign.userId
+        components, campaign.userId
       );
 
       await WhatsAppMessage.create({
-        campaignId: campaign._id,
-        recipientId: recipient._id,
-        phone: recipient.phone,
-        direction: 'outgoing',
+        campaignId: campaign._id, recipientId: recipient._id,
+        phone: recipient.phone, direction: 'outgoing',
         body: 'Template message sent',
         whatsappMessageId: response.messages?.[0]?.id,
         timestamp: new Date(),
@@ -720,4 +714,5 @@ module.exports = {
   sendCampaignToRecipients,
   renameCampaign,
   deleteScanHistoryEntry,
+  renormalizeCampaignPhones,
 };
