@@ -27,6 +27,10 @@ const createCampaignSchema = z.object({
     designId: z.string().optional(),
     headerImageUrl: z.string().optional(),
     includeHeaderImage: z.boolean().optional(),
+
+    // ✅ NEW: phone number normalization
+    autoAddCountryCode: z.boolean().optional(),
+    defaultCountryCode: z.string().regex(/^\d{1,4}$/, 'Invalid country code').optional(),
   }),
 });
 
