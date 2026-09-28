@@ -5,10 +5,18 @@ const qrService = require('./qr.service');
 const ApiError = require('../../utils/apiError');
 const minioService = require('../../services/minio.service');
 const { deleteResources } = require('../../utils/minioCleanup');
-const Settings = require('../settings/settings.model'); // ✅ Import Settings for passcode verification
+const Settings = require('../settings/settings.model');
+const { debugNormalizePhone } = require('../../utils/phone');
 
-// ─── CRUD ────────────────────────────────────────────────────────────
+// ─── CRUD ────────────────────────────────────────────────────────
 const create = asyncHandler(async (req, res) => {
+  console.log('[createCampaign] body received:', {
+    name: req.body.name,
+    autoAddCountryCode: req.body.autoAddCountryCode,
+    defaultCountryCode: req.body.defaultCountryCode,
+    recipientCount: req.body.recipients?.length,
+    firstPhone: req.body.recipients?.[0]?.phone,
+  });
   const campaignData = { ...req.body, userId: req.user._id };
   const campaign = await campaignService.createCampaign(campaignData);
   res.status(201).json({ success: true, data: campaign });
@@ -37,73 +45,51 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Campaign deleted' });
 });
 
-// ─── Upload static header image ───────────────────────────────────────
 const uploadHeaderImage = asyncHandler(async (req, res) => {
-  if (!req.file) {
-    throw new ApiError(400, 'Image file is required');
-  }
+  if (!req.file) throw new ApiError(400, 'Image file is required');
   const imageUrl = await campaignService.uploadHeaderImage(req.file.buffer, req.file.originalname);
   res.json({ success: true, url: imageUrl });
 });
 
-// ─── Update header image / includeHeaderImage for an existing campaign ──
 const updateHeaderImage = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { headerImageUrl, includeHeaderImage } = req.body;
-
   const campaign = await campaignService.updateCampaignHeaderImage(campaignId, {
     headerImageUrl: headerImageUrl !== undefined ? headerImageUrl : undefined,
     includeHeaderImage: includeHeaderImage !== undefined ? includeHeaderImage : undefined,
   });
-
   res.json({ success: true, data: campaign });
 });
 
-// ─── QR generation ──────────────────────────────────────────────────
 const generateQRs = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new ApiError(404, 'Campaign not found');
-
   if (!campaign.recipients || campaign.recipients.length === 0) {
     throw new ApiError(400, 'Campaign has no recipients to generate QR codes for');
   }
 
   campaign.qrGenerationStatus = {
-    total: campaign.recipients.length,
-    completed: 0,
-    status: 'processing',
+    total: campaign.recipients.length, completed: 0, status: 'processing',
   };
   await campaign.save();
-
-  console.log(`🚀 Starting QR generation for campaign ${campaignId} with ${campaign.recipients.length} recipients`);
 
   processQRCodes(campaign._id).catch(err => {
     console.error('❌ QR generation background job crashed:', err.message);
   });
 
-  res.json({
-    success: true,
-    message: 'QR generation started',
-    campaignId,
-    total: campaign.recipients.length,
-  });
+  res.json({ success: true, message: 'QR generation started', campaignId, total: campaign.recipients.length });
 });
 
 const getQRProgress = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const campaign = await Campaign.findById(campaignId).select('qrGenerationStatus recipients');
   if (!campaign) throw new ApiError(404, 'Campaign not found');
-
-  const total = campaign.qrGenerationStatus?.total || 0;
-  const completed = campaign.qrGenerationStatus?.completed || 0;
-  const status = campaign.qrGenerationStatus?.status || 'pending';
-
   res.json({
     success: true,
-    total,
-    completed,
-    status,
+    total: campaign.qrGenerationStatus?.total || 0,
+    completed: campaign.qrGenerationStatus?.completed || 0,
+    status: campaign.qrGenerationStatus?.status || 'pending',
   });
 });
 
@@ -112,13 +98,10 @@ const getById = asyncHandler(async (req, res) => {
   res.json({ success: true, data: campaign });
 });
 
-// ─── Delete ALL (now MinIO) ─────────────────────────────────────────
 const deleteAll = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const campaigns = await Campaign.find({ userId });
-  if (campaigns.length === 0) {
-    return res.json({ success: true, message: 'No campaigns to delete' });
-  }
+  if (campaigns.length === 0) return res.json({ success: true, message: 'No campaigns to delete' });
 
   const allObjectNames = [];
   for (const campaign of campaigns) {
@@ -133,20 +116,14 @@ const deleteAll = asyncHandler(async (req, res) => {
       }
     }
   }
-
-  if (allObjectNames.length > 0) {
-    await deleteResources(allObjectNames);
-  }
-
+  if (allObjectNames.length > 0) await deleteResources(allObjectNames);
   await Campaign.deleteMany({ userId });
-
   res.json({
     success: true,
     message: `Deleted ${campaigns.length} campaigns and ${allObjectNames.length} images`,
   });
 });
 
-// ─── Check‑in ──────────────────────────────────────────────────
 const checkIn = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { qrData } = req.body;
@@ -155,7 +132,6 @@ const checkIn = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
-// ─── Get scan history ─────────────────────────────────────────
 const getScanHistory = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { search, page, limit } = req.query;
@@ -167,29 +143,24 @@ const getScanHistory = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
-// ─── Add recipients to existing campaign ─────────────────────
 const addRecipients = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { recipients, generateQr, sendNow } = req.body;
-
   if (!Array.isArray(recipients) || recipients.length === 0) {
     throw new ApiError(400, 'recipients must be a non-empty array');
   }
-
+  console.log('[addRecipients] first phone received:', recipients[0]?.phone);
   const campaign = await campaignService.addRecipientsToCampaign(campaignId, recipients, {
     generateQr: generateQr === true,
     sendNow: sendNow === true,
   });
-
   res.json({ success: true, data: campaign });
 });
 
-// ─── Get progress of add-recipients process ──────────────────
 const getAddRecipientsProgress = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const campaign = await Campaign.findById(campaignId).select('addRecipientsStatus');
   if (!campaign) throw new ApiError(404, 'Campaign not found');
-
   const { total, completed, status, phase } = campaign.addRecipientsStatus || {};
   res.json({
     success: true,
@@ -200,7 +171,6 @@ const getAddRecipientsProgress = asyncHandler(async (req, res) => {
   });
 });
 
-// ─── Send manual message to a specific number ─────────────────
 const sendManual = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { phone, variables } = req.body;
@@ -209,48 +179,50 @@ const sendManual = asyncHandler(async (req, res) => {
   res.json({ success: true, data: result });
 });
 
-// ─── Reset check‑in for a recipient ────────────────────────────
 const resetRecipientCheckIn = asyncHandler(async (req, res) => {
   const { campaignId, recipientId } = req.params;
   const result = await campaignService.resetRecipientCheckIn(campaignId, recipientId);
   res.json({ success: true, data: result });
 });
 
-// ─── Rename a campaign ──────────────────────────────────────────
 const rename = asyncHandler(async (req, res) => {
   const { campaignId } = req.params;
   const { name } = req.body;
-  if (!name || !name.trim()) {
-    throw new ApiError(400, 'Campaign name is required');
-  }
+  if (!name || !name.trim()) throw new ApiError(400, 'Campaign name is required');
   const campaign = await campaignService.renameCampaign(campaignId, name, req.user._id);
   res.json({ success: true, data: campaign });
 });
 
-// ─── Delete scan history entry (requires passcode) ────────────
 const deleteScanHistory = asyncHandler(async (req, res) => {
   const { campaignId, scanId } = req.params;
   const { passcode } = req.body;
-
-  if (!passcode) {
-    throw new ApiError(400, 'Passcode is required');
-  }
-
-  // ✅ Use req.user.userId, same as settings service/controller
+  if (!passcode) throw new ApiError(400, 'Passcode is required');
   const settings = await Settings.findOne({ userId: req.user.userId });
-  if (!settings) {
-    throw new ApiError(404, 'Settings not found');
-  }
-
-  // Compare plaintext passcode (no hashing in the schema)
-  if (settings.passcode !== passcode.trim()) {
-    throw new ApiError(401, 'Invalid passcode');
-  }
-
+  if (!settings) throw new ApiError(404, 'Settings not found');
+  if (settings.passcode !== passcode.trim()) throw new ApiError(401, 'Invalid passcode');
   await campaignService.deleteScanHistoryEntry(campaignId, scanId);
   res.json({ success: true, message: 'Scan history entry deleted' });
 });
 
+// ─── Debug: test normalizePhone in isolation ────────────────────
+const debugNormalize = asyncHandler(async (req, res) => {
+  const { phone, autoAddCountryCode, defaultCountryCode } = req.body;
+  const result = debugNormalizePhone(phone, {
+    enabled: autoAddCountryCode !== false,
+    countryCode: defaultCountryCode || '234',
+  });
+  res.json({ success: true, data: result });
+});
+
+// ─── Renormalize all recipients in a campaign ───────────────────
+const renormalizePhones = asyncHandler(async (req, res) => {
+  const { campaignId } = req.params;
+  const { forceStripPrefix } = req.body || {};
+  const result = await campaignService.renormalizeCampaignPhones(campaignId, { forceStripPrefix });
+  res.json({ success: true, data: result });
+});
+
+// ─── Background QR generation ───────────────────────────────────
 async function processQRCodes(campaignId) {
   const campaign = await Campaign.findById(campaignId).populate('designId');
   if (!campaign) return;
@@ -258,14 +230,6 @@ async function processQRCodes(campaignId) {
 
   const design = campaign.designId || null;
   const mapping = campaign.mapping || {};
-
-  if (design) {
-    console.log(`🎨 Using design: ${design.name}`);
-    console.log(`  qrConfig:`, design.qrConfig);
-    console.log(`  textOverlays:`, design.textOverlays?.length || 0);
-  } else {
-    console.log(`⚠️ No design assigned – generating plain QR codes.`);
-  }
 
   const recipients = campaign.recipients;
   for (let i = 0; i < recipients.length; i++) {
@@ -284,25 +248,12 @@ async function processQRCodes(campaignId) {
   await campaign.save();
 }
 
-// ─── Exports ──────────────────────────────────────────────────────
 module.exports = {
-  create,
-  launch,
-  getHistory,
-  retryFailed,
-  remove,
-  uploadHeaderImage,
-  updateHeaderImage,
-  generateQRs,
-  getQRProgress,
-  getById,
-  deleteAll,
-  checkIn,
-  getScanHistory,
-  addRecipients,
-  resetRecipientCheckIn,
-  sendManual,
-  getAddRecipientsProgress,
-  rename,
-  deleteScanHistory,
+  create, launch, getHistory, retryFailed, remove,
+  uploadHeaderImage, updateHeaderImage,
+  generateQRs, getQRProgress, getById, deleteAll,
+  checkIn, getScanHistory, addRecipients,
+  resetRecipientCheckIn, sendManual, getAddRecipientsProgress,
+  rename, deleteScanHistory,
+  debugNormalize, renormalizePhones,
 };
