@@ -7,12 +7,7 @@ const scanHistorySchema = new mongoose.Schema({
   status: { type: String, enum: ['success', 'failed'] },
   message: String,
   scannedBy: { type: String, default: 'system' },
-  qrDataFields: [
-    {
-      label: String,
-      value: String,
-    },
-  ],
+  qrDataFields: [{ label: String, value: String }],
 });
 
 const recipientSchema = new mongoose.Schema(
@@ -59,13 +54,18 @@ const campaignSchema = new mongoose.Schema(
       default: 'draft',
     },
     delivered: { type: Number, default: 0 },
-    failed: { type: Number, default: 0 },
+    failed:    { type: Number, default: 0 },
     activeVariants: [Number],
     variants: [String],
     mapping: { type: Object, default: {} },
     designId: { type: mongoose.Schema.Types.ObjectId, ref: 'Design' },
     headerImageUrl: { type: String, default: '' },
     includeHeaderImage: { type: Boolean, default: false },
+
+    // ✅ NEW: phone-number normalization for this campaign
+    autoAddCountryCode: { type: Boolean, default: true },
+    defaultCountryCode: { type: String, default: '234' },
+
     qrGenerationStatus: {
       total: Number,
       completed: { type: Number, default: 0 },
@@ -76,7 +76,6 @@ const campaignSchema = new mongoose.Schema(
       },
     },
     scanHistory: [scanHistorySchema],
-    // 👇 NEW: progress for adding new recipients
     addRecipientsStatus: {
       total: Number,
       completed: { type: Number, default: 0 },
