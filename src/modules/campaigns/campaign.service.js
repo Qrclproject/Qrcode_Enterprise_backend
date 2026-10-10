@@ -12,7 +12,7 @@ const { decrypt } = require('../../utils/encryption');
 const minioService = require('../../services/minio.service');
 const { deleteResources } = require('../../utils/minioCleanup');
 const WhatsAppMessage = require('./message.model');
-const { normalizePhone } = require('../../utils/phone');
+const { normalizePhone } = require('../../utils/phone'); 
 
 // ─── Log prefix so we can filter in Coolify ──────────────────────
 const LOG = '[PHONE]';
