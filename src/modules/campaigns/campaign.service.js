@@ -31,11 +31,62 @@ const extractPlaceholders = (body) => {
   return matches.map((m) => parseInt(m.match(/\d+/)[0], 10)).sort((a, b) => a - b);
 };
 
+// ─── Case/whitespace-tolerant recipient value lookup ────────────
+// Recipients added at different times may store the same column with
+// different casing ("ATTENDEE NAME" vs "Attendee Name"). This resolves
+// the value regardless so mapping lookups don't silently return empty,
+// which was causing WhatsApp error (#131008) "Required parameter is missing".
+const normalizeKey = (s) =>
+  String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+function getRecipientValue(recipient, columnName) {
+  if (!recipient || !columnName) return '';
+
+  // Exact match first (fast path)
+  const direct = recipient[columnName];
+  if (direct !== undefined && direct !== null) return String(direct).trim();
+
+  // Case + whitespace tolerant match
+  const target = normalizeKey(columnName);
+  const key = Object.keys(recipient).find((k) => normalizeKey(k) === target);
+  if (key === undefined) return '';
+
+  const v = recipient[key];
+  return v === undefined || v === null ? '' : String(v).trim();
+}
+
+// ─── Mapping resolver (flat OR nested shape) ────────────────────
+function resolveMappingColumn(mapping, key) {
+  if (!mapping) return null;
+
+  // Nested shape: { placeholders: { "1": "ATTENDEE NAME" } }
+  if (mapping.placeholders && mapping.placeholders[key] !== undefined) {
+    return mapping.placeholders[key];
+  }
+  // Flat shape: { "1": "ATTENDEE NAME" }
+  if (typeof mapping[key] === 'string') {
+    return mapping[key];
+  }
+  // Numeric coercion: mapping[1] vs mapping["1"]
+  const numKey = String(Number(key));
+  if (numKey !== 'NaN' && typeof mapping[numKey] === 'string') {
+    return mapping[numKey];
+  }
+  return null;
+}
+
 const buildBodyParameters = (recipient, placeholderNumbers, mapping) =>
   placeholderNumbers.map((num) => {
-    const columnName = mapping?.[String(num)] || '';
-    const value = columnName ? (recipient[columnName] || '') : '';
-    return { type: 'text', text: value };
+    const columnName = resolveMappingColumn(mapping, String(num)) || '';
+    const value = getRecipientValue(recipient, columnName);
+
+    // Never send an empty string — WhatsApp rejects the whole message
+    // with (#131008). Substitute a safe fallback so the send still works.
+    const text = value || '-';
+    console.log(
+      `${LOG} {{${num}}} → col: ${columnName || '(none)'} | value: ${JSON.stringify(text)}`
+    );
+    return { type: 'text', text };
   });
 
 const validateTemplateId = (templateId) => {
@@ -74,16 +125,27 @@ const createCampaign = async (data) => {
     console.log(`  [${i}] phone = "${r.phone}"`)
   );
 
-  const recipients = (data.recipients || []).map((r) => ({
-    ...r,
-    phone: normalizePhone(r.phone, {
-      enabled: autoAddCountryCode,
-      countryCode: defaultCountryCode,
-    }),
-    status: r.status || 'pending',
-    checkedIn: r.checkedIn || false,
-    checkedInAt: r.checkedInAt || null,
-  }));
+  const mapping = data.mapping || {};
+
+  const recipients = (data.recipients || []).map((r) => {
+    // Frontend already extracted phone using mapping; if it's empty,
+    // fall back to a case-insensitive lookup from the mapping's phone column.
+    let rawPhone = r.phone;
+    if (!rawPhone) {
+      const phoneCol = resolveMappingColumn(mapping, 'phone');
+      if (phoneCol) rawPhone = getRecipientValue(r, phoneCol);
+    }
+    return {
+      ...r,
+      phone: normalizePhone(rawPhone || '', {
+        enabled: autoAddCountryCode,
+        countryCode: defaultCountryCode,
+      }),
+      status: r.status || 'pending',
+      checkedIn: r.checkedIn || false,
+      checkedInAt: r.checkedInAt || null,
+    };
+  });
 
   console.log(`${LOG} createCampaign normalized recipients (first 3):`);
   recipients.slice(0, 3).forEach((r, i) =>
@@ -254,6 +316,21 @@ const retryFailedRecipients = async (campaignId) => {
       const variant = template.variants[variantIndex];
       if (!variant) throw new Error('Variant not found');
 
+      // If the recipient's phone is empty, try the mapping lookup.
+      if (!recipient.phone) {
+        const phoneCol = resolveMappingColumn(campaign.mapping, 'phone');
+        const recovered = getRecipientValue(recipient, phoneCol);
+        if (recovered) {
+          recipient.phone = normalizePhone(recovered, {
+            enabled: campaign.autoAddCountryCode ?? true,
+            countryCode: campaign.defaultCountryCode ?? '234',
+          });
+        }
+      }
+      if (!recipient.phone) {
+        throw new Error('No phone number for this recipient');
+      }
+
       const placeholders = extractPlaceholders(variant.body);
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
       const components = [];
@@ -349,7 +426,7 @@ const checkInRecipient = async (campaignId, qrData) => {
   if (design && design.qrDataFields && design.qrDataFields.length > 0) {
     const extraParts = parts.slice(1);
     qrDataFields = design.qrDataFields.map((fieldKey, idx) => {
-      const columnName = campaign.mapping?.[fieldKey] || fieldKey;
+      const columnName = resolveMappingColumn(campaign.mapping, fieldKey) || fieldKey;
       return { label: columnName, value: extraParts[idx] !== undefined ? extraParts[idx] : '' };
     });
   }
@@ -505,17 +582,31 @@ const sendManualMessage = async (campaignId, phone, customVariables = {}) => {
 // ─── Add recipients ─────────────────────────────────────────────
 const addRecipientsToCampaign = async (campaignId, newRecipients, { generateQr = false, sendNow = false } = {}) => {
   const existing = await Campaign.findById(campaignId)
-    .select('autoAddCountryCode defaultCountryCode');
+    .select('autoAddCountryCode defaultCountryCode mapping');
   if (!existing) throw new ApiError(404, 'Campaign not found');
 
   const autoAddCountryCode = existing.autoAddCountryCode ?? true;
   const defaultCountryCode = existing.defaultCountryCode ?? '234';
+  const mapping = existing.mapping || {};
 
   console.log(`${LOG} addRecipients using campaign settings →`, { autoAddCountryCode, defaultCountryCode });
+  console.log(`${LOG} mapping →`, JSON.stringify(mapping));
 
   const normalizedRecipients = newRecipients.map((r) => {
-    const out = normalizePhone(r.phone || '', { enabled: autoAddCountryCode, countryCode: defaultCountryCode });
-    console.log(`${LOG}   "${r.phone}" ⇒ "${out}"`);
+    // Frontend already tried to extract phone via mapping. If empty
+    // (which happens when the sheet column casing differs from the
+    // stored mapping), recover it with a case-insensitive lookup.
+    let rawPhone = r.phone;
+    if (!rawPhone) {
+      const phoneCol = resolveMappingColumn(mapping, 'phone');
+      if (phoneCol) rawPhone = getRecipientValue(r, phoneCol);
+    }
+
+    const out = normalizePhone(rawPhone || '', {
+      enabled: autoAddCountryCode,
+      countryCode: defaultCountryCode,
+    });
+    console.log(`${LOG}   "${rawPhone || '(empty)'}" ⇒ "${out}"`);
     return {
       ...r,
       phone: out,
@@ -655,6 +746,10 @@ const sendCampaignToRecipients = async (campaignId, recipientIds) => {
       const variantIndex = activeIndices[0];
       const variant = template.variants[variantIndex];
       if (!variant) throw new Error('Variant not found');
+
+      if (!recipient.phone) {
+        throw new Error('No phone number for this recipient');
+      }
 
       const placeholders = extractPlaceholders(variant.body);
       const bodyParams = buildBodyParameters(recipient, placeholders, campaign.mapping);
